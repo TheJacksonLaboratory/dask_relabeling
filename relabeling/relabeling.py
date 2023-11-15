@@ -2,6 +2,7 @@ from typing import List, Union, Callable
 import numpy as np
 import dask.array as da
 import functools
+import itertools
 
 
 def segmentation_function_decorator(segmentation_fn:Callable):
@@ -49,7 +50,7 @@ def segmentation_function_decorator(segmentation_fn:Callable):
                     if (loc % 2 != 0 and out_mrg_prop >= threshold
                       or loc % 2 == 0 and in_mrg_prop < threshold):
                         labeled_image[np.where(labeled_image == mrg_l)] = 0
-                    
+
             if loc < nchk - 1:
                 # Remove objects touching the `upper` border of the current
                 # axis from labels of this chunk.
@@ -95,79 +96,48 @@ def merge_tiles_overlap(tile:np.ndarray, overlap:List[int],
               ovp * (2 if loc > 0 else 0) + s)
         for s, loc, ovp in zip(chunk_shape, chunk_location, overlap)
     )
+    ndim = tile.ndim
+    src_sel_list = []
+    dst_sel_list = []
 
-    src_sel_list = [
-        tuple(
-            [slice(ovp * (2 if loc_j > 0 else 0),
-                   ovp * (2 if loc_j > 0 else 0) + s)
-             for s, loc_j, ovp in zip(chunk_shape[:i], chunk_location[:i],
-                                      overlap[:i])]
-            + [slice(0, overlap[i])]
-            + [slice(ovp * (2 if loc_j > 0 else 0),
-                     ovp * (2 if loc_j > 0 else 0) + s)
-               for s, loc_j, ovp in zip(chunk_shape[i+1:],
-                                        chunk_location[i+1:],
-                                        overlap[i+1:])]
-        )
-        for i, loc in enumerate(chunk_location)
-        if 0 < loc and loc % 2
-    ]
+    for d in range(ndim):
+        for comb in itertools.combinations(range(ndim), d):
+            for k in range(2 ** (ndim - d)):
+                indices = list(
+                    np.unpackbits(np.array([k], dtype=np.uint8),
+                                    count=ndim-d,bitorder="little")
+                )
+                for fixed in comb:
+                    indices.insert(fixed, None)
 
-    src_sel_list += [
-        tuple(
-            [slice(ovp * (2 if loc_j > 0 else 0),
-                   ovp * (2 if loc_j > 0 else 0) + s)
-             for s, loc_j, ovp in zip(chunk_shape[:i], chunk_location[:i],
-                                      overlap[:i])]
-            + [slice(-overlap[i], None)]
-            + [slice(ovp * (2 if loc_j > 0 else 0),
-                     ovp * (2 if loc_j > 0 else 0) + s)
-               for s, loc_j, ovp in zip(chunk_shape[i+1:],
-                                        chunk_location[i+1:],
-                                        overlap[i+1:])]
-        )
-        for i, (loc, nchk) in enumerate(zip(chunk_location, num_chunks))
-        if loc < nchk - 1 and loc % 2
-    ]
+                curr_src_sel = []
+                curr_dst_sel = []
+                for s, loc, nchk, ovp, level in zip(chunk_shape,
+                                                    chunk_location,
+                                                    num_chunks,
+                                                    overlap,
+                                                    indices):
+                    if (level is not None and
+                      (level and loc >= nchk - 1
+                       or not level and loc == 0
+                       or loc % 2 == 0)):
+                        break
 
-    dst_sel_list = [
-        tuple(
-            [slice(None)] * i + [slice(0, overlap[i])]
-            + [slice(None)] * (tile.ndim - i - 1)
-        )
-        for i, loc in enumerate(chunk_location)
-        if loc > 0 and loc % 2
-    ]
+                    curr_src_sel.append(
+                        slice(ovp * (2 if loc > 0 else 0),
+                            ovp * (2 if loc > 0 else 0) + s)
+                        if level is None else
+                        slice(0, ovp) if not level else slice(-ovp, None)
+                    )
 
-    dst_sel_list += [
-        tuple(
-            [slice(None)] * i + [slice(-overlap[i], None)]
-            + [slice(None)] * (tile.ndim - i - 1)
-        )
-        for i, (loc, nchk) in enumerate(zip(chunk_location, num_chunks))
-        if loc < nchk - 1 and loc % 2
-    ]
+                    curr_dst_sel.append(
+                        slice(None) if level is None else
+                        slice(0, ovp) if not level else slice(-ovp, None)
+                    )
 
-    for d in range(2 ** tile.ndim):
-        corner = np.unpackbits(
-            np.array((d), dtype=np.uint8),
-            count=tile.ndim,
-            bitorder="little"
-        )
-
-        # Only check valid corners.
-        if any(loc >= nchk - 1 if c_idx else loc == 0
-               for c_idx, loc, nchk in zip(corner, chunk_location,num_chunks)
-               ):
-            continue
-
-        corner_slice = tuple(
-            slice(-ovp, None) if c_idx else slice(0, ovp)
-            for c_idx, ovp in zip(corner, overlap)
-        )
-
-        src_sel_list.append(corner_slice)
-        dst_sel_list.append(corner_slice)
+                else:
+                    src_sel_list.append(tuple(curr_src_sel))
+                    dst_sel_list.append(tuple(curr_dst_sel))
 
     # Merge center tile region, that is not overlapped by any adjacent chunk.
     merged_tile = np.copy(tile[base_src_sel])
