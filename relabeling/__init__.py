@@ -1,11 +1,8 @@
-from .relabeling import (segmentation_function_decorator,
-                         merge_tiles_overlap,
-                         compute_checkered_positions,
-                         segmenting_tiles)
+from .relabeling import segmenting_tiles
+
+from .utils import save_intermediate_array
 
 __all__ = [
-    "segmentation_function_decorator",
-    "merge_tiles_overlap",
-    "compute_checkered_positions",
-    "segmenting_tiles"
+    "segmenting_tiles",
+    "save_intermediate_array"
 ]

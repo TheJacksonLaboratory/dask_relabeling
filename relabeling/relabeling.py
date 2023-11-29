@@ -1,207 +1,269 @@
-from typing import List, Union, Callable
+import os
+import shutil
+
 import numpy as np
+import scipy
+
+from skimage import morphology, measure, filters, transform
+import cv2
+
 import dask.array as da
+from dask.callbacks import Callback
+from dask.diagnostics import ProgressBar
+
+from typing import List, Union, Callable
+import geojson
+
+import pathlib
+import zipfile
+
 import functools
+import operator
 import itertools
 
 
-def segmentation_function_decorator(segmentation_fn:Callable):
-    """ Wraps the ambiguous labels removal process around the segmentation
-    function.
-    """
-    def segmentation_function(img_chunk, overlap: List[int],
-                              threshold:float=0.05,
-                              block_info:dict=None,
-                              **segmentation_fn_kwargs):
-        # Execute the segmentation function.
-        labeled_image = segmentation_fn(img_chunk, **segmentation_fn_kwargs)
-        labeled_image = labeled_image.astype(np.int32)
-        ndim = labeled_image.ndim
-
-        chunk_location = block_info[None]["chunk-location"]
-        num_chunks = block_info[None]["num-chunks"]
-
-        tile_base_sel = [slice(None)] * ndim
-
-        for i, (loc, nchk, ovp) in enumerate(zip(chunk_location, num_chunks,
-                                                 overlap)):
-            if loc > 0:
-                # Remove objects touching the `lower` border of the current
-                # axis from labels of this chunk.
-                mrg_sel = list(tile_base_sel)
-
-                mrg_sel[i] = slice(0, ovp)
-                out_margin = labeled_image[tuple(mrg_sel)]
-
-                mrg_sel[i] = slice(ovp, 2 * ovp)
-                in_margin = labeled_image[tuple(mrg_sel)]
-
-                margin_labels = np.unique(out_margin)
-
-                for mrg_l in margin_labels:
-                    if mrg_l == 0:
-                        continue
-
-                    in_mrg = np.sum(in_margin == mrg_l)
-                    out_mrg = np.sum(out_margin == mrg_l)
-                    out_mrg_prop = out_mrg / (in_mrg + out_mrg)
-                    in_mrg_prop = 1.0 - out_mrg_prop
-
-                    if (loc % 2 != 0 and out_mrg_prop >= threshold
-                      or loc % 2 == 0 and in_mrg_prop < threshold):
-                        labeled_image[np.where(labeled_image == mrg_l)] = 0
-
-            if loc < nchk - 1:
-                # Remove objects touching the `upper` border of the current
-                # axis from labels of this chunk.
-                mrg_sel = list(tile_base_sel)
-
-                mrg_sel[i] = slice(-ovp, None)
-                out_margin = labeled_image[tuple(mrg_sel)]
-
-                mrg_sel[i] = slice(-2 * ovp, -ovp)
-                in_margin = labeled_image[tuple(mrg_sel)]
-
-                margin_labels = np.unique(out_margin)
-
-                for mrg_l in margin_labels:
-                    if mrg_l == 0:
-                        continue
-
-                    in_mrg = np.sum(in_margin == mrg_l)
-                    out_mrg = np.sum(out_margin == mrg_l)
-                    out_mrg_prop = out_mrg / (in_mrg + out_mrg)
-                    in_mrg_prop = 1.0 - out_mrg_prop
-
-                    if (loc % 2 != 0 and out_mrg_prop >= threshold
-                      or loc % 2 == 0 and in_mrg_prop < threshold):
-                        labeled_image[np.where(labeled_image == mrg_l)] = 0
-
-        return labeled_image
-
-    return segmentation_function
+from .utils import save_intermediate_array, dump_annotations
 
 
-def merge_tiles_overlap(tile:np.ndarray, overlap:List[int],
-                        block_info:Union[dict, None]=None):
-    """Merges the labeled objects from adjacent chunks into this one.
-    """
+class NoProgressBar(Callback):
+    pass
+
+
+def remove_overlapped_objects(labeled_image: np.array, overlap:List[int],
+                              threshold:float,
+                              chunk_location: List[int],
+                              num_chunks:List[int]):
+    ndim = labeled_image.ndim
+
+    # Remove objects touching the `lower` and `upper` borders of the current
+    # axis from labels of this chunk.
+    overlapped_labels = []
+
+    overlapped_sel = itertools.product(
+        [True, False],
+        zip(range(ndim), chunk_location, num_chunks, overlap)
+    )
+
+    for lvl, (i, loc, nchk, ovp) in overlapped_sel:
+        if loc > 0 and lvl:
+            in_sel = tuple(
+                [slice(None)] * i
+                + [slice(ovp, 2 * ovp)]
+                + [slice(None)] * (ndim - 1 - i)
+            )
+            out_sel = tuple(
+                [slice(None)] * i
+                + [slice(0, ovp)]
+                + [slice(None)] * (ndim - 1 - i)
+            )
+
+        elif loc < nchk - 1 and not lvl:
+            in_sel = tuple(
+                [slice(None)] * i
+                + [slice(-2 * ovp, -ovp)]
+                + [slice(None)] * (ndim - 1 - i)
+            )
+            out_sel = tuple(
+                [slice(None)] * i
+                + [slice(-ovp, None)]
+                + [slice(None)] * (ndim - 1 - i)
+            )
+        else:
+            continue
+
+        in_margin = labeled_image[in_sel]
+        out_margin = labeled_image[out_sel]
+
+        for mrg_l in np.unique(out_margin):
+            if mrg_l == 0:
+                continue
+
+            in_mrg = np.sum(in_margin == mrg_l)
+            out_mrg = np.sum(out_margin == mrg_l)
+            out_mrg_prop = out_mrg / (in_mrg + out_mrg)
+            in_mrg_prop = 1.0 - out_mrg_prop
+
+            if (loc % 2 != 0 and out_mrg_prop >= threshold
+                or loc % 2 == 0 and in_mrg_prop < threshold):
+                overlapped_labels.append(mrg_l)
+
+    for mrg_l in overlapped_labels:
+        labeled_image = np.where(labeled_image == mrg_l, 0, labeled_image)
+
+    # Relabel image to have a continuous sequence of indices
+    labels_map = np.unique(labeled_image)
+    labels_map = scipy.sparse.csr_matrix(
+        (np.arange(labels_map.size, dtype=np.int32),
+            (labels_map, np.zeros_like(labels_map))),
+        shape=(labels_map.max() + 1, 1)
+    )
+
+    labels_map = labels_map[labeled_image.ravel()]
+    labeled_image = labels_map.reshape(labeled_image.shape).todense()
+
+    return labeled_image
+
+
+def segmentation_function(img_chunk,
+                          segmentation_fn,
+                          mask=None,
+                          overlap=50,
+                          threshold=0.1,
+                          ndim=2,
+                          block_info=None,
+                          **segmentation_fn_kwargs):
+
+    if mask is not None and mask.sum() == 0:
+        return np.zeros(img_chunk.shape[-ndim:], dtype=np.int32)
+
+    # Execute the segmentation process
+    labeled_image = segmentation_fn(img_chunk, **segmentation_fn_kwargs)
+    labeled_image = labeled_image.astype(np.int32)
+
+    if mask is not None:
+        labeled_image = np.where(mask, labeled_image, 0)
+
+    labeled_image = remove_overlapped_objects(
+        labeled_image,
+        overlap,
+        threshold,
+        block_info[None]["chunk-location"],
+        block_info[None]["num-chunks"]
+    )
+
+    return labeled_image
+
+
+def get_overlapping_indices(ndim, chunk_location, num_chunks):
+    valid_indices = []
+    for d in range(ndim):
+        for comb, k in itertools.product(itertools.combinations(range(ndim), d), range(2 ** (ndim - d))):
+            indices = list(np.unpackbits(np.array([k], dtype=np.uint8), count=ndim - d, bitorder="little"))
+            for fixed in comb:
+                indices[fixed:fixed] = [None]
+
+            if any(map(lambda lvl, loc, nchk:
+                       lvl is not None and (loc % 2 == 0
+                                            or loc == 0 and not lvl
+                                            or loc >= nchk - 1 and lvl),
+                       indices, chunk_location, num_chunks)):
+                continue
+
+            valid_indices.append(indices)
+
+    return valid_indices
+
+
+def merge_tiles_overlap(tile, overlap=None, dump_geojson=False, block_info=None):
     num_chunks = block_info[None]["num-chunks"]
     chunk_location = block_info[None]["chunk-location"]
-    chunk_shape = block_info[None]["chunk-shape"]
 
-    # Compute selections from overlapped regions to merge into this chunk.
+    # Compute selections from regions to merge
     base_src_sel = tuple(
-        slice(ovp * (2 if loc > 0 else 0),
-              ovp * (2 if loc > 0 else 0) + s)
-        for s, loc, ovp in zip(chunk_shape, chunk_location, overlap)
+        slice(ovp if loc > 0 else 0, -ovp if loc < nchk - 1 else None)
+        for loc, nchk, ovp in zip(chunk_location, num_chunks, overlap)
     )
-    ndim = tile.ndim
-    src_sel_list = []
-    dst_sel_list = []
 
-    for d in range(ndim):
-        for comb in itertools.combinations(range(ndim), d):
-            for k in range(2 ** (ndim - d)):
-                indices = list(
-                    np.unpackbits(np.array([k], dtype=np.uint8),
-                                    count=ndim-d,bitorder="little")
-                )
-                for fixed in comb:
-                    indices.insert(fixed, None)
+    merging_tile = np.copy(tile[base_src_sel])
 
-                curr_src_sel = []
-                curr_dst_sel = []
-                for s, loc, nchk, ovp, level in zip(chunk_shape,
-                                                    chunk_location,
-                                                    num_chunks,
-                                                    overlap,
-                                                    indices):
-                    if (level is not None and
-                      (level and loc >= nchk - 1
-                       or not level and loc == 0
-                       or loc % 2 == 0)):
-                        break
+    if dump_geojson:
+        offset_index = np.max(merging_tile)
+        offset_labels = np.where(merging_tile, offset_index + 1, 0)
+        merging_tile = merging_tile - offset_labels
 
-                    curr_src_sel.append(
-                        slice(ovp * (2 if loc > 0 else 0),
-                            ovp * (2 if loc > 0 else 0) + s)
-                        if level is None else
-                        slice(0, ovp) if not level else slice(-ovp, None)
-                    )
+    left_tile = np.empty_like(merging_tile)
 
-                    curr_dst_sel.append(
-                        slice(None) if level is None else
-                        slice(0, ovp) if not level else slice(-ovp, None)
-                    )
+    valid_indices = get_overlapping_indices(ndim=tile.ndim, chunk_location=chunk_location, num_chunks=num_chunks)
 
-                else:
-                    src_sel_list.append(tuple(curr_src_sel))
-                    dst_sel_list.append(tuple(curr_dst_sel))
+    valid_src_sel = (
+        map(lambda loc, nchk, ovp, level:
+            slice(ovp if loc > 0 else 0, -ovp if loc < nchk - 1 else None)
+            if level is None else
+            slice(0, ovp) if not level else slice(-ovp, None),
+            chunk_location, num_chunks, overlap, indices
+        )
+        for indices in valid_indices
+    )
 
-    # Merge center tile region, that is not overlapped by any adjacent chunk.
-    merged_tile = np.copy(tile[base_src_sel])
-    left_tile = np.zeros_like(merged_tile)
+    valid_dst_sel = (
+        map(lambda loc, nchk, ovp, level:
+            slice(None)
+            if level is None else
+            slice(ovp if loc > 0 else 0, ovp * (2 if loc > 0 else 1))
+            if not level else
+            slice(-ovp * (2 if loc < nchk - 1 else 1),
+                    -ovp if loc < nchk - 1 else None),
+            chunk_location, num_chunks, overlap, indices)
+        for indices in valid_indices
+    )
 
-    # Merge into the current tile the overlapping regions from adjacent chunks.
-    for src_sel, dst_sel in zip(src_sel_list, dst_sel_list):
-        left_tile[dst_sel] = tile[src_sel]
+    for src_sel, dst_sel in zip(valid_src_sel, valid_dst_sel):
+        left_tile[:] = 0
+        left_tile[tuple(dst_sel)] = tile[tuple(src_sel)]
 
-        for l_label in np.unique(left_tile)[1:]:
-            left_mask = left_tile == l_label
-            merged_tile[np.nonzero(left_mask)] = l_label
+        for l_label in np.unique(left_tile):
+            if l_label == 0:
+                continue
+
+            merging_tile = np.where(
+                left_tile == l_label,
+                0 if dump_geojson else l_label,
+                merging_tile
+            )
+
+    if dump_geojson:
+        merged_tile = merging_tile
+    else:
+        merged_tile = merging_tile[base_src_sel]
 
     return merged_tile
 
 
-def compute_checkered_positions(num_blocks:List[int]):
-    """Compute the positions in a checkered pattern that is used to determine
-    the order in which to apply the segmentation function.
-    """
-    ndim = len(num_blocks)
-    coords = np.indices(num_blocks)
-    coords_even = functools.reduce(
-        np.bitwise_and,
-        map(lambda c_ax: c_ax % 2 == 0, coords)
+def dump_chunk_geojson(merged_tile, overlap, object_classes=None, out_dir=None, block_info=None):
+    num_chunks = block_info[None]["num-chunks"]
+    chunk_location = block_info[None]["chunk-location"]
+    chunk_shape = [
+        s - (ovp if loc > 0 else 0) - (ovp if loc < nchk - 1 else 0)
+        for s, loc, nchk, ovp in zip(merged_tile.shape, chunk_location, num_chunks, overlap)
+    ]
+
+    if object_classes is None:
+        object_classes = {
+            None: "cell"
+        }
+
+    offset = np.array(chunk_location, dtype=np.int64)
+    offset *= np.array(chunk_shape)
+    offset -= np.array([ovp if loc > 0 else 0
+                        for loc, ovp in zip(chunk_location, overlap)])
+    offset = offset[[1, 0]]
+
+    out_fn = "detections-" + "-".join(map(str, chunk_location)) + ".geojson"
+
+    # TODO: Pass predicted classes as additional dask.Array, and object
+    # types as dictionaries
+    detections = dump_annotations(
+        merged_tile,
+        object_classes[None],
+        filename=out_fn,
+        scale=1.0,
+        offset=offset,
+        keep_all=False
     )
-    coords_even = np.stack(np.nonzero(coords_even)).T
 
-    coords_offsets = np.stack([
-        np.unpackbits(np.array((d, ), dtype=np.uint8), count=ndim,
-                      bitorder="little")
-        for d in range(2**ndim)
-    ])
+    if out_dir is None:
+        merged_tile = np.array([[detections]], dtype=object)
 
-    checkered_coords = coords_even[None, ...] + coords_offsets[:, None, :]
-    checkered_indices = []
-    for chk_coords in checkered_coords:
-        valid_chk_coords = chk_coords[np.all(chk_coords < np.array(num_blocks),
-                                             axis=1)]
-        checkered_indices.append(
-            [np.ravel_multi_index(c, num_blocks) for c in valid_chk_coords]
-        )
+    elif len(detections["features"]):
+        merged_tile = np.array([[out_fn]], dtype=object)
 
-    return checkered_indices
+    else:
+        merged_tile = np.array([[None]], dtype=object)
+
+    return merged_tile
 
 
-def segmenting_tiles(img: da.Array, seg_fn:Callable,
-                     chunksize:Union[List[int],int]=128,
-                     overlap:Union[List[int], int]=50,
-                     ndim:int=2,
-                     compute_intermediate:bool=True,
-                     **segmentation_fn_kwargs):
-    """Performs the chunk-wise segmentation of input `img` using function
-    `seg_fn` and merges all the labeled objects into a single labeled image.
-    """
-    if isinstance(overlap, int):
-        overlap = [overlap] * ndim
-
-    if isinstance(chunksize, int):
-        chunksize = [chunksize] * ndim
-
-    # Wrap the segmentation function with the decorator.
-    block_seg_fn = segmentation_function_decorator(seg_fn)
-
+def prepare_input(img: da.Array, chunksize:List[int], ndim:int=2):
     # Prepare input for overlap.
     img_rechunked = da.rechunk(
         img,
@@ -224,75 +286,257 @@ def segmenting_tiles(img: da.Array, seg_fn:Callable,
             list(img_padded.chunksize[:img.ndim - ndim]) + chunksize
         )
 
-    out_chunks = tuple(
-        tuple(cs + (ovp if loc > 0 else 0) + (ovp if loc < nchk-1 else 0)
-              for loc, cs in enumerate(cs_ax)
-              )
-        for cs_ax, nchk, ovp in zip(img_rechunked.chunks[-ndim:],
-                                    img_rechunked.numblocks[-ndim:],
-                                    overlap)
-    )
+    return img_rechunked
 
-    # We can use map_blocks because the input is already overlapped.
-    block_labeled = da.map_overlap(
-        block_seg_fn,
-        img_rechunked,
-        **segmentation_fn_kwargs,
-        overlap=overlap,
-        threshold=0.05,
-        chunks=out_chunks,
+
+def prepare_mask(mask, mask_scale, chunksize, chunks, overlap, ndim):
+    if mask is None:
+        mask_overlapped = None
+
+    else:
+        chunksize_mask = [round(cs * mask_scale) for cs in chunksize]
+        mask_rechunked = prepare_input(
+            mask,
+            chunksize=chunksize_mask,
+            ndim=ndim
+        )
+
+        mask_rechunked = da.map_blocks(
+            transform.rescale,
+            mask_rechunked,
+            scale=round(1 / mask_scale),
+            order=0,
+            chunks=chunks,
+            dtype=bool,
+            meta=np.empty((0, ), dtype=bool)
+        )
+
+        mask_overlapped = da.overlap.overlap(
+            mask_rechunked,
+            depth=tuple([(ovp, ovp) for ovp in overlap]),
+            boundary=None,
+        )
+
+    return mask_overlapped
+
+
+def segment_overlapping(img:da.Array, mask:da.Array, seg_fn:Callable,
+                        overlap:List[int],
+                        ndim:int,
+                        segmentation_fn_kwargs:Union[dict, None]=None):
+
+    if segmentation_fn_kwargs is None:
+        segmentation_fn_kwargs = {}
+
+    img_overlapped = da.overlap.overlap(
+        img,
         depth=tuple([(0, 0)] * (img.ndim - ndim)
                     + [(ovp, ovp) for ovp in overlap]),
         boundary=None,
-        trim=False,
-        drop_axis=(range(img.ndim - ndim)),
-        dtype=np.int64,
-        meta=np.empty((0, ), dtype=np.int64)
     )
 
-    # Intermediate computation of the segmentation. Because it could fit in the
-    # RAM memory, it can be run and be keept for following merging process.
-    if compute_intermediate:
-        block_labeled = block_labeled.persist()
+    block_labeled = da.map_blocks(
+        segmentation_function,
+        img_overlapped,
+        seg_fn,
+        mask,
+        overlap=overlap,
+        threshold=0.05,
+        **segmentation_fn_kwargs,
+        chunks=img_overlapped.chunks[-ndim:],
+        drop_axis=tuple(range(img.ndim - ndim)),
+        dtype=np.int32,
+        meta=np.empty((0, 0), dtype=np.int32)
+    )
 
-    checkered_indices = compute_checkered_positions(block_labeled.numblocks)
-    sel_coords = da.core.slices_from_chunks(block_labeled.chunks)
+    return block_labeled
+
+
+def relabel_chunks(block_labeled):
+    block_relabeled = da.zeros_like(block_labeled, dtype=np.int32)
 
     total = 0
 
-    merged_tiles_offset = da.zeros(img_rechunked.shape[-ndim:],
-                                   chunks=img_rechunked.chunks[-ndim:],
-                                   dtype=np.int32)
+    n_labels = da.map_blocks(
+        np.max,
+        block_labeled,
+        chunks=(1, 1),
+        dtype=np.int32,
+        meta=np.empty((0, 0), dtype=np.int32)
+    )
+    for n, sel in zip(n_labels.ravel(),
+                        da.core.slices_from_chunks(block_labeled.chunks)):
+        labels_offset = da.where(block_labeled[sel] > 0, total, 0)
+        block_relabeled[sel] = block_labeled[sel] + labels_offset
+        total += n
 
-    for chk_idx in checkered_indices:
-        block_relabeled = da.zeros_like(block_labeled)
+    return block_relabeled
 
-        for c_idx in chk_idx:
-            sel = sel_coords[c_idx]
-            n = da.max(block_labeled[sel])
 
-            # Add the labels offset, so there is a continuous sequence of label
-            # indices across the segmented image.
-            labels_offset = da.where(block_labeled[sel] > 0, total, 0)
-            block_relabeled[sel] = block_labeled[sel] + labels_offset
+def segmenting_tiles(img: da.Array, seg_fn:Callable,
+                     mask:Union[da.Array, None]=None,
+                     mask_scale:float=1.0,
+                     chunksize:Union[int, List[int]]=128,
+                     overlap:Union[int, List[int]]=50,
+                     ndim:int=2,
+                     dump_geojson:bool=False,
+                     out_dir:Union[pathlib.Path, str]=None,
+                     save_intermediate:bool=False,
+                     progressbar:bool=False,
+                     segmentation_fn_kwargs:Union[dict, None]=None):
 
-            total += n
+    if isinstance(overlap, int):
+        overlap = [overlap] * ndim
 
-        # Merge the tiles into a single labeled image.
-        merged_tiles_offset += da.map_overlap(
-            merge_tiles_overlap,
-            block_relabeled,
-            overlap=overlap,
-            depth=tuple([(ovp, ovp) for ovp in overlap]),
-            boundary=None,
-            trim=False,
-            chunks=img_rechunked.chunks[-ndim:],
-            dtype=np.int64,
-            meta=np.empty((0, ), dtype=np.int64)
+    if isinstance(chunksize, int):
+        chunksize = [chunksize] * ndim
+
+    if progressbar:
+        progressbar_callbak = ProgressBar
+    else:
+        progressbar_callbak = NoProgressBar
+
+    img_rechunked = prepare_input(img, chunksize=chunksize, ndim=ndim)
+
+    mask_overlapped = prepare_mask(
+        mask,
+        mask_scale=mask_scale,
+        chunksize=chunksize,
+        chunks=img_rechunked.chunks[-ndim:],
+        overlap=overlap,
+        ndim=ndim
+    )
+
+    block_labeled = segment_overlapping(
+        img_rechunked,
+        mask_overlapped,
+        seg_fn,
+        overlap=overlap,
+        ndim=ndim,
+        segmentation_fn_kwargs=segmentation_fn_kwargs
+    )
+
+    # Intermediate computation of the segmentation. If the segmented image fits
+    # in RAM memory, use `save_intermediate=True`, otherwise, save it into a
+    # temporary file.
+    if save_intermediate:
+        block_labeled = save_intermediate_array(
+            block_labeled,
+            filename="temp_labeled.zarr",
+            overlap=[2*ovp for ovp in overlap],
+            out_dir=out_dir,
+            progressbar=progressbar
         )
 
-    # Remove the padding added at the beginning
-    img_sel = tuple(slice(0, s) for s in img.shape[-ndim:])
-    merged_tiles = merged_tiles_offset[img_sel]
+    else:
+        with progressbar_callbak():
+            block_labeled = block_labeled.persist()
+
+    if not dump_geojson:
+        block_labeled = relabel_chunks(block_labeled, chunksize, overlap)
+
+        if save_intermediate:
+            block_labeled = save_intermediate_array(
+                block_labeled,
+                filename="temp_relabeled.zarr",
+                overlap=[2*ovp for ovp in overlap],
+                out_dir=out_dir,
+                progressbar=progressbar
+            )
+
+            shutil.rmtree(os.path.join(out_dir, "temp_labeled.zarr"))
+
+        else:
+            with progressbar_callbak():
+                block_labeled = block_labeled.persist()
+
+    # Merge the tiles insto a single labeled image.
+    merged_tiles = da.map_overlap(
+        merge_tiles_overlap,
+        block_labeled,
+        overlap=overlap,
+        dump_geojson=dump_geojson,
+        depth=tuple([(ovp, ovp) for ovp in overlap]),
+        boundary=None,
+        trim=False,
+        chunks=img_rechunked.chunks[-ndim:],
+        dtype=np.int32,
+        meta=np.empty((0, 0), dtype=np.int32)
+    )
+
+    if save_intermediate:
+        merged_tiles = save_intermediate_array(
+            merged_tiles,
+            filename="temp_merged_tiles.zarr",
+            overlap=overlap if dump_geojson else None,
+            out_dir=out_dir,
+            progressbar=progressbar
+        )
+
+        if dump_geojson:
+            shutil.rmtree(os.path.join(out_dir, "temp_labeled.zarr"))
+        else:
+            shutil.rmtree(os.path.join(out_dir, "temp_relabeled.zarr"))
+
+    else:
+        with progressbar_callbak():
+            merged_tiles = merged_tiles.persist()
+
+    if dump_geojson:
+        # Merge the tiles insto a single labeled image.
+        merged_tiles = da.map_blocks(
+            dump_chunk_geojson,
+            merged_tiles,
+            overlap=overlap,
+            out_dir=out_dir,
+            chunks=img_rechunked.numblocks[-ndim:],
+            dtype=object,
+            meta=np.empty((0, 0), dtype=object)
+        )
+
+        directory = pathlib.Path(os.path.join(out_dir, "detections"))
+        os.makedirs(directory, exist_ok=True)
+
+        with progressbar_callbak():
+            merged_tiles = merged_tiles.persist()
+
+        if save_intermediate:
+            shutil.rmtree(os.path.join(out_dir, "temp_merged_tiles.zarr"))
+
+        if mask is not None:
+            padded_mask = np.pad(mask, tuple((1, 0) for _ in range(mask.ndim)))
+            padded_mask = padded_mask[tuple(slice(None, -1)
+                                            for _ in range(mask.ndim))]
+            padded_mask += mask
+        else:
+            padded_mask = np.ones(img.shape[-ndim:], dtype=bool)
+
+        if out_dir is not None:
+            dump_annotations(
+                padded_mask,
+                object_type="annotation",
+                filename=os.path.join(out_dir, "detections/annotations.zip"),
+                scale=mask_scale,
+                offset=None,
+                keep_all=True
+            )
+
+            out_fn = os.path.join(out_dir, "detections.zip")
+            with zipfile.ZipFile(out_fn, "w", zipfile.ZIP_DEFLATED,
+                                compresslevel=9) as archive:
+                for file_path in directory.rglob("*.geojson"):
+                    archive.write(file_path,
+                                arcname=file_path.relative_to(directory))
+
+            shutil.rmtree(os.path.join(out_dir, "detections"))
+
+            merged_tiles = out_fn
+
+    else:
+        # Remove the padding added at the beginning
+        img_sel = tuple(slice(0, s) for s in img.shape[-ndim:])
+        merged_tiles = merged_tiles[img_sel]
+        with progressbar_callbak():
+            merged_tiles = merged_tiles.persist()
 
     return merged_tiles
