@@ -238,7 +238,7 @@ def dump_chunk_geojson(merged_tile, overlap, object_classes=None, out_dir=None, 
                         for loc, ovp in zip(chunk_location, overlap)])
     offset = offset[[1, 0]]
 
-    out_fn = "detections-" + "-".join(map(str, chunk_location)) + ".geojson"
+    out_fn = os.path.join(out_dir, "detections", "detections-" + "-".join(map(str, chunk_location)) + ".geojson")
 
     # TODO: Pass predicted classes as additional dask.Array, and object
     # types as dictionaries
@@ -251,14 +251,7 @@ def dump_chunk_geojson(merged_tile, overlap, object_classes=None, out_dir=None, 
         keep_all=False
     )
 
-    if out_dir is None:
-        merged_tile = np.array([[detections]], dtype=object)
-
-    elif len(detections["features"]):
-        merged_tile = np.array([[out_fn]], dtype=object)
-
-    else:
-        merged_tile = np.array([[None]], dtype=object)
+    merged_tile = np.array([[detections]], dtype=object)
 
     return merged_tile
 
@@ -515,7 +508,7 @@ def segmenting_tiles(img: da.Array, seg_fn:Callable,
             dump_annotations(
                 padded_mask,
                 object_type="annotation",
-                filename=os.path.join(out_dir, "detections/annotations.zip"),
+                filename=os.path.join(out_dir, "detections/annotations.geojson"),
                 scale=mask_scale,
                 offset=None,
                 keep_all=True
@@ -523,10 +516,10 @@ def segmenting_tiles(img: da.Array, seg_fn:Callable,
 
             out_fn = os.path.join(out_dir, "detections.zip")
             with zipfile.ZipFile(out_fn, "w", zipfile.ZIP_DEFLATED,
-                                compresslevel=9) as archive:
+                                 compresslevel=9) as archive:
                 for file_path in directory.rglob("*.geojson"):
                     archive.write(file_path,
-                                arcname=file_path.relative_to(directory))
+                                  arcname=file_path.relative_to(directory))
 
             shutil.rmtree(os.path.join(out_dir, "detections"))
 

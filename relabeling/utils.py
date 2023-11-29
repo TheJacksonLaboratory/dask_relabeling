@@ -68,6 +68,7 @@ def dump_annotations(labels:Union[np.ndarray, None],
                      scale:float=1.0,
                      offset:Union[np.ndarray, None]=None,
                      keep_all=False) -> Union[List[geojson.Feature], str, None]:
+    annotations = []
     for l in np.unique(labels):
         if l == 0:
             continue
@@ -85,7 +86,6 @@ def dump_annotations(labels:Union[np.ndarray, None],
                                         range(len(contour_coords)),
                                         contour_coords))[1]]
 
-        annotations = []
         for p_idx in contours_indices:
             cc = contour_coords[p_idx].squeeze(1)
             if len(cc) < 2:
@@ -102,10 +102,10 @@ def dump_annotations(labels:Union[np.ndarray, None],
             annotations[-1]["properties"] = {"objectType": object_type}
 
     if len(annotations) and filename is not None:
-            with open(filename, "w") as fp:
-                geojson.dump(annotations, fp)
-            
-            annotations = filename
+        with open(filename, "w") as fp:
+            geojson.dump(annotations, fp)
+
+        annotations = filename
 
     elif len(annotations) == 0:
         annotations = None
