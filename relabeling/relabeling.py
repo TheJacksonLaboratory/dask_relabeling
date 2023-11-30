@@ -1,39 +1,63 @@
 import os
 import shutil
-
-import numpy as np
-import scipy
-
-from skimage import morphology, measure, filters, transform
-import cv2
-
-import dask.array as da
-from dask.callbacks import Callback
-from dask.diagnostics import ProgressBar
-
-from typing import List, Union, Callable
-import geojson
-
 import pathlib
 import zipfile
 
-import functools
 import operator
+import functools
 import itertools
 
+import numpy as np
+import scipy
+from skimage import transform
+
+import dask
+import dask.array as da
+from dask.callbacks import Callback
+from dask.diagnostics import ProgressBar
+from numcodecs import JSON, Pickle, Blosc
+
+from typing import List, Tuple, Union, Callable
 
 from .utils import save_intermediate_array, dump_annotations
 
 
-class NoProgressBar(Callback):
-    pass
+def _segmentation_function(img_chunk: np.ndarray,
+                           segmentation_fn: Callable,
+                           mask: Union[np.ndarray, None] = None,
+                           ndim: int = 2,
+                           **segmentation_fn_kwargs) -> np.ndarray:
+    """Wrapper to apply a segmentation function to each chunk.
+    If a mask is passed, only the segmentation corresponding to the masked
+    regions are returned.
+    """
+    if mask is not None and mask.sum() == 0:
+        return np.zeros(img_chunk.shape[-ndim:], dtype=np.int32)
+
+    # Execute the segmentation process
+    labeled_image = segmentation_fn(img_chunk, **segmentation_fn_kwargs)
+    labeled_image = labeled_image.astype(np.int32)
+
+    if mask is not None:
+        labeled_image = np.where(mask, labeled_image, 0)
+
+    return labeled_image
 
 
-def remove_overlapped_objects(labeled_image: np.array, overlap:List[int],
-                              threshold:float,
-                              chunk_location: List[int],
-                              num_chunks:List[int]):
-    ndim = labeled_image.ndim
+def _remove_overlapped_objects(labeled_image: np.array, overlap: List[int],
+                               chunk_location: Tuple[int],
+                               num_chunks: Tuple[int],
+                               threshold: float = 0.05,
+                               ndim: int = 2,
+                               ) -> np.ndarray:
+    """Removes ambiguous objects detected in overlapping regions between
+    adjacent chunks.
+    """
+    if labeled_image.ndim > ndim:
+        classes = labeled_image[1]
+        labeled_image = labeled_image[0]
+    else:
+        classes = None
 
     # Remove objects touching the `lower` and `upper` borders of the current
     # axis from labels of this chunk.
@@ -84,10 +108,13 @@ def remove_overlapped_objects(labeled_image: np.array, overlap:List[int],
             in_mrg_prop = 1.0 - out_mrg_prop
 
             if (loc % 2 != 0 and out_mrg_prop >= threshold
-                or loc % 2 == 0 and in_mrg_prop < threshold):
+               or loc % 2 == 0 and in_mrg_prop < threshold):
                 overlapped_labels.append(mrg_l)
 
     for mrg_l in overlapped_labels:
+        if classes is not None:
+            classes = np.where(labeled_image == mrg_l, 0, classes)
+
         labeled_image = np.where(labeled_image == mrg_l, 0, labeled_image)
 
     # Relabel image to have a continuous sequence of indices
@@ -101,44 +128,72 @@ def remove_overlapped_objects(labeled_image: np.array, overlap:List[int],
     labels_map = labels_map[labeled_image.ravel()]
     labeled_image = labels_map.reshape(labeled_image.shape).todense()
 
-    return labeled_image
+    num_labels = np.max(labeled_image)
+
+    if classes is not None:
+        labeled_image = np.stack((labeled_image, classes), axis=0)
+
+    return labeled_image, num_labels
 
 
-def segmentation_function(img_chunk,
-                          segmentation_fn,
-                          mask=None,
-                          overlap=50,
-                          threshold=0.1,
-                          ndim=2,
-                          block_info=None,
-                          **segmentation_fn_kwargs):
+def _delayed_remove_overlapped_objects(labeled_image: da.Array,
+                                       overlap: List[int],
+                                       chunk_location: Tuple[int],
+                                       num_chunks: Tuple[int],
+                                       threshold: float = 0.05,
+                                       ndim: int = 2,
+                                       ) -> da.Array:
+    """Delayed version of `remove_overlapped_objects` that allows to run the
+    removal process lazily.
+    """
+    removed_overlaps = dask.delayed(_remove_overlapped_objects, nout=2)
 
-    if mask is not None and mask.sum() == 0:
-        return np.zeros(img_chunk.shape[-ndim:], dtype=np.int32)
+    labeled_block, n = removed_overlaps(labeled_image, overlap=overlap,
+                                        chunk_location=chunk_location,
+                                        num_chunks=num_chunks,
+                                        threshold=threshold,
+                                        ndim=ndim)
 
-    # Execute the segmentation process
-    labeled_image = segmentation_fn(img_chunk, **segmentation_fn_kwargs)
-    labeled_image = labeled_image.astype(np.int32)
+    n = dask.delayed(np.int32)(n)
 
-    if mask is not None:
-        labeled_image = np.where(mask, labeled_image, 0)
+    relabeled = da.from_delayed(labeled_block, shape=labeled_image.shape,
+                                dtype=np.int32)
+    n = da.from_delayed(n, shape=(), dtype=np.int32)
+    return relabeled, n
 
-    labeled_image = remove_overlapped_objects(
-        labeled_image,
-        overlap,
-        threshold,
-        block_info[None]["chunk-location"],
-        block_info[None]["num-chunks"]
+
+def _merge_tiles(tile: np.ndarray, overlap: List[int],
+                 to_geojson: bool = False,
+                 block_info: Union[dict, None] = None) -> np.ndarray:
+    """Merge objects detected in overlapping regions from adjacent chunks of
+    this.
+    """
+    num_chunks = block_info[None]["num-chunks"]
+    chunk_location = block_info[None]["chunk-location"]
+    ndim = tile.ndim
+
+    # Compute selections from regions to merge
+    base_src_sel = tuple(
+        slice(ovp if loc > 0 else 0, -ovp if loc < nchk - 1 else None)
+        for loc, nchk, ovp in zip(chunk_location, num_chunks, overlap)
     )
 
-    return labeled_image
+    merging_tile = np.copy(tile[base_src_sel])
 
+    if to_geojson:
+        offset_index = np.max(merging_tile)
+        offset_labels = np.where(merging_tile, offset_index + 1, 0)
+        merging_tile = merging_tile - offset_labels
 
-def get_overlapping_indices(ndim, chunk_location, num_chunks):
+    left_tile = np.empty_like(merging_tile)
+
     valid_indices = []
     for d in range(ndim):
-        for comb, k in itertools.product(itertools.combinations(range(ndim), d), range(2 ** (ndim - d))):
-            indices = list(np.unpackbits(np.array([k], dtype=np.uint8), count=ndim - d, bitorder="little"))
+        for comb, k in itertools.product(
+          itertools.combinations(range(ndim), d), range(2 ** (ndim - d))):
+            indices = list(np.unpackbits(np.array([k], dtype=np.uint8),
+                                         count=ndim - d,
+                                         bitorder="little"))
             for fixed in comb:
                 indices[fixed:fixed] = [None]
 
@@ -151,37 +206,12 @@ def get_overlapping_indices(ndim, chunk_location, num_chunks):
 
             valid_indices.append(indices)
 
-    return valid_indices
-
-
-def merge_tiles_overlap(tile, overlap=None, dump_geojson=False, block_info=None):
-    num_chunks = block_info[None]["num-chunks"]
-    chunk_location = block_info[None]["chunk-location"]
-
-    # Compute selections from regions to merge
-    base_src_sel = tuple(
-        slice(ovp if loc > 0 else 0, -ovp if loc < nchk - 1 else None)
-        for loc, nchk, ovp in zip(chunk_location, num_chunks, overlap)
-    )
-
-    merging_tile = np.copy(tile[base_src_sel])
-
-    if dump_geojson:
-        offset_index = np.max(merging_tile)
-        offset_labels = np.where(merging_tile, offset_index + 1, 0)
-        merging_tile = merging_tile - offset_labels
-
-    left_tile = np.empty_like(merging_tile)
-
-    valid_indices = get_overlapping_indices(ndim=tile.ndim, chunk_location=chunk_location, num_chunks=num_chunks)
-
     valid_src_sel = (
         map(lambda loc, nchk, ovp, level:
             slice(ovp if loc > 0 else 0, -ovp if loc < nchk - 1 else None)
             if level is None else
             slice(0, ovp) if not level else slice(-ovp, None),
-            chunk_location, num_chunks, overlap, indices
-        )
+            chunk_location, num_chunks, overlap, indices)
         for indices in valid_indices
     )
 
@@ -192,7 +222,7 @@ def merge_tiles_overlap(tile, overlap=None, dump_geojson=False, block_info=None)
             slice(ovp if loc > 0 else 0, ovp * (2 if loc > 0 else 1))
             if not level else
             slice(-ovp * (2 if loc < nchk - 1 else 1),
-                    -ovp if loc < nchk - 1 else None),
+                  -ovp if loc < nchk - 1 else None),
             chunk_location, num_chunks, overlap, indices)
         for indices in valid_indices
     )
@@ -207,11 +237,11 @@ def merge_tiles_overlap(tile, overlap=None, dump_geojson=False, block_info=None)
 
             merging_tile = np.where(
                 left_tile == l_label,
-                0 if dump_geojson else l_label,
+                0 if to_geojson else l_label,
                 merging_tile
             )
 
-    if dump_geojson:
+    if to_geojson:
         merged_tile = merging_tile
     else:
         merged_tile = merging_tile[base_src_sel]
@@ -219,18 +249,23 @@ def merge_tiles_overlap(tile, overlap=None, dump_geojson=False, block_info=None)
     return merged_tile
 
 
-def dump_chunk_geojson(merged_tile, overlap, object_classes=None, out_dir=None, block_info=None):
+def _dump_chunk_geojson(merged_tile: np.ndarray, overlap: List[int],
+                        object_classes: dict,
+                        out_dir: Union[pathlib.Path, None] = None,
+                        ndim: int = 2,
+                        block_info: Union[dict, None] = None) -> np.ndarray:
+    """Convert detections into GeoJson Feature objects containing the contour
+    and class of each detected object in this chunk.
+    """
     num_chunks = block_info[None]["num-chunks"]
     chunk_location = block_info[None]["chunk-location"]
     chunk_shape = [
         s - (ovp if loc > 0 else 0) - (ovp if loc < nchk - 1 else 0)
-        for s, loc, nchk, ovp in zip(merged_tile.shape, chunk_location, num_chunks, overlap)
+        for s, loc, nchk, ovp in zip(merged_tile.shape,
+                                     chunk_location,
+                                     num_chunks,
+                                     overlap)
     ]
-
-    if object_classes is None:
-        object_classes = {
-            None: "cell"
-        }
 
     offset = np.array(chunk_location, dtype=np.int64)
     offset *= np.array(chunk_shape)
@@ -238,16 +273,18 @@ def dump_chunk_geojson(merged_tile, overlap, object_classes=None, out_dir=None, 
                         for loc, ovp in zip(chunk_location, overlap)])
     offset = offset[[1, 0]]
 
-    out_fn = os.path.join(out_dir, "detections", "detections-" + "-".join(map(str, chunk_location)) + ".geojson")
+    out_fn = "detections-" + "-".join(map(str, chunk_location)) + ".geojson"
+    out_fn = out_dir / out_fn
 
     # TODO: Pass predicted classes as additional dask.Array, and object
     # types as dictionaries
     detections = dump_annotations(
         merged_tile,
-        object_classes[None],
+        object_classes=object_classes,
         filename=out_fn,
         scale=1.0,
         offset=offset,
+        ndim=ndim,
         keep_all=False
     )
 
@@ -256,39 +293,291 @@ def dump_chunk_geojson(merged_tile, overlap, object_classes=None, out_dir=None, 
     return merged_tile
 
 
-def prepare_input(img: da.Array, chunksize:List[int], ndim:int=2):
-    # Prepare input for overlap.
-    img_rechunked = da.rechunk(
+def _segment_overlapping(img: da.Array, seg_fn: Callable, overlap: List[int],
+                         mask: Union[da.Array, None] = None,
+                         ndim: int = 2,
+                         segmentation_fn_kwargs: Union[dict, None] = None,
+                         persist: Union[bool, pathlib.Path] = False,
+                         progressbar: bool = False
+                         ) -> da.Array:
+
+    if segmentation_fn_kwargs is None:
+        segmentation_fn_kwargs = {}
+
+    img_overlapped = da.overlap.overlap(
         img,
-        list(img.shape[:img.ndim - ndim]) + chunksize
+        depth=tuple([(0, 0)] * (img.ndim - ndim)
+                    + [(ovp, ovp) for ovp in overlap]),
+        boundary=None,
     )
 
-    padding = [(0, 0)] * (img.ndim - ndim)\
-              + [(0, (cs - s) % cs)
-                 for s, cs in zip(img.shape[-ndim:], chunksize)
-                ]
+    labeled_chunks = tuple(
+        list(img.chunks[:(img.ndim - ndim)])
+        + [tuple(cs
+                 + (ovp if loc > 0 else 0)
+                 + (ovp if loc < len(cs_axis) - 1 else 0)
+                 for loc, cs in enumerate(cs_axis))
+           for ovp, cs_axis in zip(overlap, img.chunks[-ndim:])
+           ]
+    )
+
+    block_labeled = da.map_blocks(
+        _segmentation_function,
+        img_overlapped,
+        seg_fn,
+        mask,
+        **segmentation_fn_kwargs,
+        chunks=labeled_chunks,
+        drop_axis=tuple(range(img.ndim - ndim)),
+        dtype=np.int32,
+        meta=np.empty((0, 0), dtype=np.int32)
+    )
+
+    if progressbar:
+        progressbar_callback = ProgressBar
+    else:
+        progressbar_callback = Callback
+
+    with progressbar_callback():
+        if isinstance(persist, pathlib.Path):
+            block_labeled = save_intermediate_array(
+                block_labeled,
+                filename="temp_labeled.zarr",
+                overlap=overlap,
+                out_dir=persist,
+                compressor=Blosc(clevel=5)
+            )
+
+        elif persist:
+            block_labeled = block_labeled.persist()
+
+    return block_labeled
+
+
+def _remove_overlapped_labels(labels: da.Array, overlap: List[int],
+                              threshold: float = 0.05,
+                              ndim: int = 2,
+                              relabel: bool = False,
+                              persist: Union[bool, pathlib.Path] = False,
+                              progressbar: bool = False) -> da.Array:
+
+    block_relabeled = np.empty(labels.numblocks[-ndim:], dtype=object)
+
+    # First, label each block independently, incrementing the labels in that
+    # block by the total number of labels from previous blocks. This way, each
+    # block's labels are globally unique. Source: dask_image.label
+    block_iter = zip(
+        np.ndindex(*labels.numblocks[-ndim:]),
+        map(functools.partial(operator.getitem, labels),
+            da.core.slices_from_chunks(labels.chunks))
+    )
+
+    num_chunks = labels.numblocks[-ndim:]
+    index, input_block = next(block_iter)
+    (block_relabeled[index],
+     total) = _delayed_remove_overlapped_objects(
+         input_block,
+         overlap=overlap,
+         threshold=threshold,
+         num_chunks=num_chunks,
+         chunk_location=tuple([0] * ndim),
+         ndim=ndim)
+
+    for index, input_block in block_iter:
+        (relabeled_block,
+         n) = _delayed_remove_overlapped_objects(input_block,
+                                                 overlap=overlap,
+                                                 threshold=threshold,
+                                                 chunk_location=index,
+                                                 num_chunks=num_chunks,
+                                                 ndim=ndim)
+
+        if relabel:
+            block_label_offset = da.where(relabeled_block > 0, total, 0)
+            relabeled_block += block_label_offset
+            total += n
+
+        block_relabeled[index] = relabeled_block
+
+    # Put all the blocks together
+    block_relabeled = da.block(block_relabeled.tolist())
+
+    if progressbar:
+        progressbar_callback = ProgressBar
+    else:
+        progressbar_callback = Callback
+
+    with progressbar_callback():
+        if isinstance(persist, pathlib.Path):
+            block_relabeled = save_intermediate_array(
+                block_relabeled,
+                filename="temp_relabeled.zarr",
+                overlap=overlap,
+                out_dir=persist,
+                compressor=Blosc(clevel=5)
+            )
+
+        elif persist:
+            block_relabeled = block_relabeled.persist()
+
+    return block_relabeled
+
+
+def _merge_overlapped_tiles(labels: da.Array, overlap: List[int],
+                            ndim: int = 2,
+                            to_geojson: bool = False,
+                            persist: Union[bool, pathlib.Path] = False,
+                            progressbar: bool = False) -> da.Array:
+
+    merged_chunks = tuple(
+        list(labels.chunks[:(labels.ndim - ndim)])
+        + [tuple(cs
+                 - (ovp if loc > 0 else 0)
+                 - (ovp if loc < len(cs_axis) - 1 else 0)
+                 for loc, cs in enumerate(cs_axis))
+           for ovp, cs_axis in zip(overlap, labels.chunks[-ndim:])
+           ]
+    )
+
+    merged_depth = tuple([0] * (labels.ndim - ndim)
+                         + [(ovp, ovp) for ovp in overlap])
+
+    # Merge the tiles insto a single labeled image.
+    merged_tiles = da.map_overlap(
+        _merge_tiles,
+        labels,
+        overlap=overlap,
+        to_geojson=to_geojson,
+        depth=merged_depth,
+        boundary=None,
+        trim=False,
+        chunks=merged_chunks,
+        dtype=np.int32,
+        meta=np.empty((0, 0), dtype=np.int32)
+    )
+
+    if progressbar:
+        progressbar_callback = ProgressBar
+    else:
+        progressbar_callback = Callback
+
+    with progressbar_callback():
+        if isinstance(persist, pathlib.Path):
+            merged_tiles = save_intermediate_array(
+                merged_tiles,
+                filename="temp_merged.zarr",
+                overlap=[(1 if to_geojson else 1) * ovp for ovp in overlap],
+                out_dir=persist,
+                compressor=Blosc(clevel=5)
+            )
+
+        elif persist:
+            merged_tiles = merged_tiles.persist()
+
+    return merged_tiles
+
+
+def _dump_merged_tiles(labels: da.Array,
+                       overlap: List[int],
+                       object_classes: dict,
+                       mask: Union[da.Array, None] = None,
+                       ndim: int = 2,
+                       mask_scale: float = 1.0,
+                       out_dir: Union[pathlib.Path, None] = None,
+                       persist: Union[bool, pathlib.Path] = False,
+                       progressbar: bool = False
+                       ) -> Union[da.Array, pathlib.Path]:
+
+    labels_features = da.map_blocks(
+        _dump_chunk_geojson,
+        labels,
+        overlap=overlap,
+        object_classes=object_classes,
+        out_dir=out_dir,
+        ndim=ndim,
+        chunks=(1, 1),
+        dtype=object,
+        meta=np.empty((0, 0), dtype=object)
+    )
+
+    if progressbar:
+        progressbar_callback = ProgressBar
+    else:
+        progressbar_callback = Callback
+
+    if out_dir is not None:
+        os.makedirs(out_dir, exist_ok=True)
+
+        with progressbar_callback():
+            labels_features = labels_features.persist()
+
+        if mask is not None:
+            padded_mask = np.pad(mask, tuple((1, 0) for _ in range(mask.ndim)))
+            padded_mask = padded_mask[tuple(slice(None, -1)
+                                            for _ in range(mask.ndim))]
+            padded_mask += mask
+
+        else:
+            mask_scale = 1 / 16
+            padded_mask = np.ones([s // 16 for s in labels.shape],
+                                  dtype=bool)
+
+        dump_annotations(
+            padded_mask,
+            object_classes={0: "annotation"},
+            filename=out_dir / "annotations.geojson",
+            scale=mask_scale,
+            offset=None,
+            ndim=2,
+            keep_all=True
+        )
+
+        out_fn = pathlib.Path(str(out_dir) + "-detections.zip")
+        with zipfile.ZipFile(out_fn, "w", zipfile.ZIP_DEFLATED,
+                             compresslevel=9) as archive:
+            for file_path in out_dir.rglob("*.geojson"):
+                archive.write(file_path,
+                              arcname=file_path.relative_to(out_dir))
+
+        labels_features = out_fn
+
+    return labels_features
+
+
+def _prepare_input(img: da.Array, ndim: int = 2) -> da.Array:
+    chunksize = list(img.chunksize[-ndim:])
+
+    # Prepare input for overlap.
+    padding = [(0, 0)] * (img.ndim - ndim)
+    padding += [(0, (cs - s) % cs)
+                for s, cs in zip(img.shape[-ndim:], chunksize)]
 
     if any(map(any, padding)):
         img_padded = da.pad(
-            img_rechunked,
+            img,
             padding
         )
 
-        img_rechunked = da.rechunk(
-            img_padded,
-            list(img_padded.chunksize[:img.ndim - ndim]) + chunksize
-        )
+        img_rechunked = da.rechunk(img_padded, chunksize)
+
+    else:
+        img_rechunked = img
 
     return img_rechunked
 
 
-def prepare_mask(mask, mask_scale, chunksize, chunks, overlap, ndim):
+def _prepare_mask(mask: da.Array, mask_scale: float,
+                  chunksize: Union[List[int], Tuple[int]],
+                  chunks: Tuple[Tuple[int]],
+                  overlap: List[int],
+                  ndim: int) -> da.Array:
     if mask is None:
         mask_overlapped = None
 
     else:
         chunksize_mask = [round(cs * mask_scale) for cs in chunksize]
-        mask_rechunked = prepare_input(
+
+        mask_rechunked = _prepare_input(
             mask,
             chunksize=chunksize_mask,
             ndim=ndim
@@ -313,223 +602,86 @@ def prepare_mask(mask, mask_scale, chunksize, chunks, overlap, ndim):
     return mask_overlapped
 
 
-def segment_overlapping(img:da.Array, mask:da.Array, seg_fn:Callable,
-                        overlap:List[int],
-                        ndim:int,
-                        segmentation_fn_kwargs:Union[dict, None]=None):
-
-    if segmentation_fn_kwargs is None:
-        segmentation_fn_kwargs = {}
-
-    img_overlapped = da.overlap.overlap(
-        img,
-        depth=tuple([(0, 0)] * (img.ndim - ndim)
-                    + [(ovp, ovp) for ovp in overlap]),
-        boundary=None,
-    )
-
-    block_labeled = da.map_blocks(
-        segmentation_function,
-        img_overlapped,
-        seg_fn,
-        mask,
-        overlap=overlap,
-        threshold=0.05,
-        **segmentation_fn_kwargs,
-        chunks=img_overlapped.chunks[-ndim:],
-        drop_axis=tuple(range(img.ndim - ndim)),
-        dtype=np.int32,
-        meta=np.empty((0, 0), dtype=np.int32)
-    )
-
-    return block_labeled
-
-
-def relabel_chunks(block_labeled):
-    block_relabeled = da.zeros_like(block_labeled, dtype=np.int32)
-
-    total = 0
-
-    n_labels = da.map_blocks(
-        np.max,
-        block_labeled,
-        chunks=(1, 1),
-        dtype=np.int32,
-        meta=np.empty((0, 0), dtype=np.int32)
-    )
-    for n, sel in zip(n_labels.ravel(),
-                        da.core.slices_from_chunks(block_labeled.chunks)):
-        labels_offset = da.where(block_labeled[sel] > 0, total, 0)
-        block_relabeled[sel] = block_labeled[sel] + labels_offset
-        total += n
-
-    return block_relabeled
-
-
-def segmenting_tiles(img: da.Array, seg_fn:Callable,
-                     mask:Union[da.Array, None]=None,
-                     mask_scale:float=1.0,
-                     chunksize:Union[int, List[int]]=128,
-                     overlap:Union[int, List[int]]=50,
-                     ndim:int=2,
-                     dump_geojson:bool=False,
-                     out_dir:Union[pathlib.Path, str]=None,
-                     save_intermediate:bool=False,
-                     progressbar:bool=False,
-                     segmentation_fn_kwargs:Union[dict, None]=None):
+def label(img: da.Array, seg_fn: Callable,
+          overlap: Union[int, List[int]] = 50,
+          threshold: float = 0.05,
+          ndim: int = 2,
+          mask: Union[da.Array, None] = None,
+          mask_scale: float = 1.0,
+          to_geojson: bool = False,
+          object_classes: Union[dict, None] = None,
+          out_dir: Union[pathlib.Path, str, None] = None,
+          persist: Union[bool, pathlib.Path, str] = False,
+          progressbar: bool = False,
+          segmentation_fn_kwargs: Union[dict, None] = None
+          ) -> Union[da.Array, pathlib.Path]:
 
     if isinstance(overlap, int):
         overlap = [overlap] * ndim
 
-    if isinstance(chunksize, int):
-        chunksize = [chunksize] * ndim
+    if out_dir is not None and not isinstance(out_dir, pathlib.Path):
+        out_dir = pathlib.Path(out_dir)
 
-    if progressbar:
-        progressbar_callbak = ProgressBar
-    else:
-        progressbar_callbak = NoProgressBar
+    if persist is not None and not isinstance(persist, pathlib.Path):
+        persist = pathlib.Path(persist)
 
-    img_rechunked = prepare_input(img, chunksize=chunksize, ndim=ndim)
+    img_rechunked = _prepare_input(img, ndim=ndim)
 
-    mask_overlapped = prepare_mask(
+    mask_overlapped = _prepare_mask(
         mask,
         mask_scale=mask_scale,
-        chunksize=chunksize,
+        chunksize=img.chunksize[-ndim:],
         chunks=img_rechunked.chunks[-ndim:],
         overlap=overlap,
         ndim=ndim
     )
 
-    block_labeled = segment_overlapping(
+    labels = _segment_overlapping(
         img_rechunked,
-        mask_overlapped,
-        seg_fn,
+        seg_fn=seg_fn,
+        overlap=overlap,
+        mask=mask_overlapped,
+        ndim=ndim,
+        segmentation_fn_kwargs=segmentation_fn_kwargs,
+        persist=persist,
+        progressbar=progressbar
+    )
+
+    labels = _remove_overlapped_labels(
+        labels,
+        overlap=overlap,
+        threshold=threshold,
+        ndim=ndim,
+        relabel=not to_geojson,
+        persist=persist,
+        progressbar=progressbar
+    )
+
+    labels = _merge_overlapped_tiles(
+        labels,
         overlap=overlap,
         ndim=ndim,
-        segmentation_fn_kwargs=segmentation_fn_kwargs
+        to_geojson=to_geojson,
+        persist=persist,
+        progressbar=progressbar
     )
 
-    # Intermediate computation of the segmentation. If the segmented image fits
-    # in RAM memory, use `save_intermediate=True`, otherwise, save it into a
-    # temporary file.
-    if save_intermediate:
-        block_labeled = save_intermediate_array(
-            block_labeled,
-            filename="temp_labeled.zarr",
-            overlap=[2*ovp for ovp in overlap],
-            out_dir=out_dir,
-            progressbar=progressbar
-        )
+    if to_geojson:
+        if object_classes is None:
+            classes_ids = range(labels.shape[:(labels.ndim - ndim)]
+                                if labels.ndim - ndim > 0 else 1)
+            object_classes = {class_id: "cell" for class_id in classes_ids}
 
-    else:
-        with progressbar_callbak():
-            block_labeled = block_labeled.persist()
-
-    if not dump_geojson:
-        block_labeled = relabel_chunks(block_labeled, chunksize, overlap)
-
-        if save_intermediate:
-            block_labeled = save_intermediate_array(
-                block_labeled,
-                filename="temp_relabeled.zarr",
-                overlap=[2*ovp for ovp in overlap],
-                out_dir=out_dir,
-                progressbar=progressbar
-            )
-
-            shutil.rmtree(os.path.join(out_dir, "temp_labeled.zarr"))
-
-        else:
-            with progressbar_callbak():
-                block_labeled = block_labeled.persist()
-
-    # Merge the tiles insto a single labeled image.
-    merged_tiles = da.map_overlap(
-        merge_tiles_overlap,
-        block_labeled,
-        overlap=overlap,
-        dump_geojson=dump_geojson,
-        depth=tuple([(ovp, ovp) for ovp in overlap]),
-        boundary=None,
-        trim=False,
-        chunks=img_rechunked.chunks[-ndim:],
-        dtype=np.int32,
-        meta=np.empty((0, 0), dtype=np.int32)
-    )
-
-    if save_intermediate:
-        merged_tiles = save_intermediate_array(
-            merged_tiles,
-            filename="temp_merged_tiles.zarr",
-            overlap=overlap if dump_geojson else None,
-            out_dir=out_dir,
-            progressbar=progressbar
-        )
-
-        if dump_geojson:
-            shutil.rmtree(os.path.join(out_dir, "temp_labeled.zarr"))
-        else:
-            shutil.rmtree(os.path.join(out_dir, "temp_relabeled.zarr"))
-
-    else:
-        with progressbar_callbak():
-            merged_tiles = merged_tiles.persist()
-
-    if dump_geojson:
-        # Merge the tiles insto a single labeled image.
-        merged_tiles = da.map_blocks(
-            dump_chunk_geojson,
-            merged_tiles,
+        labels = _dump_merged_tiles(
+            labels,
             overlap=overlap,
+            object_classes=object_classes,
+            mask=mask_overlapped,
+            ndim=ndim,
+            mask_scale=mask_scale,
             out_dir=out_dir,
-            chunks=img_rechunked.numblocks[-ndim:],
-            dtype=object,
-            meta=np.empty((0, 0), dtype=object)
+            persist=persist,
+            progressbar=progressbar
         )
 
-        directory = pathlib.Path(os.path.join(out_dir, "detections"))
-        os.makedirs(directory, exist_ok=True)
-
-        with progressbar_callbak():
-            merged_tiles = merged_tiles.persist()
-
-        if save_intermediate:
-            shutil.rmtree(os.path.join(out_dir, "temp_merged_tiles.zarr"))
-
-        if mask is not None:
-            padded_mask = np.pad(mask, tuple((1, 0) for _ in range(mask.ndim)))
-            padded_mask = padded_mask[tuple(slice(None, -1)
-                                            for _ in range(mask.ndim))]
-            padded_mask += mask
-        else:
-            padded_mask = np.ones(img.shape[-ndim:], dtype=bool)
-
-        if out_dir is not None:
-            dump_annotations(
-                padded_mask,
-                object_type="annotation",
-                filename=os.path.join(out_dir, "detections/annotations.geojson"),
-                scale=mask_scale,
-                offset=None,
-                keep_all=True
-            )
-
-            out_fn = os.path.join(out_dir, "detections.zip")
-            with zipfile.ZipFile(out_fn, "w", zipfile.ZIP_DEFLATED,
-                                 compresslevel=9) as archive:
-                for file_path in directory.rglob("*.geojson"):
-                    archive.write(file_path,
-                                  arcname=file_path.relative_to(directory))
-
-            shutil.rmtree(os.path.join(out_dir, "detections"))
-
-            merged_tiles = out_fn
-
-    else:
-        # Remove the padding added at the beginning
-        img_sel = tuple(slice(0, s) for s in img.shape[-ndim:])
-        merged_tiles = merged_tiles[img_sel]
-        with progressbar_callbak():
-            merged_tiles = merged_tiles.persist()
-
-    return merged_tiles
+    return labels

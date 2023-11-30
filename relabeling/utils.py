@@ -6,28 +6,20 @@ import cv2
 import geojson
 
 import dask.array as da
-from dask.callbacks import Callback
-from dask.diagnostics import ProgressBar
-import zarr
 
-from typing import List, Union, Callable
+from numcodecs.abc import Codec
 
-
-class NoProgressBar(Callback):
-    pass
+from typing import List, Union
 
 
-def save_intermediate_array(array: da.Array, filename:Union[pathlib.Path, str],
-                            overlap:Union[List[int], None]=None,
-                            out_dir:Union[pathlib.Path, str]=".",
-                            progressbar:bool=False):
+def save_intermediate_array(array: da.Array,
+                            filename: Union[pathlib.Path, str],
+                            overlap: Union[List[int], None] = None,
+                            out_dir: Union[pathlib.Path, str] = ".",
+                            compressor: Codec = None,
+                            object_codec: Codec = None):
     if not os.path.isdir(out_dir):
         os.makedirs(out_dir, exist_ok=True)
-
-    if progressbar:
-        progressbar_callbak = ProgressBar
-    else:
-        progressbar_callbak = NoProgressBar
 
     if ".zarr" not in filename:
         filename += ".zarr"
@@ -47,12 +39,12 @@ def save_intermediate_array(array: da.Array, filename:Union[pathlib.Path, str],
             chunksize
         )
 
-    with progressbar_callbak():
-        array.to_zarr(
-            os.path.join(out_dir, filename),
-            compressor=zarr.Blosc(clevel=5),
-            overwrite=True
-        )
+    array.to_zarr(
+        out_dir / filename,
+        compressor=compressor,
+        object_codec=object_codec,
+        overwrite=True
+    )
 
     loaded_array = da.from_zarr(os.path.join(out_dir, filename))
 
@@ -62,21 +54,43 @@ def save_intermediate_array(array: da.Array, filename:Union[pathlib.Path, str],
     return loaded_array
 
 
-def dump_annotations(labels:Union[np.ndarray, None],
-                     object_type:str,
-                     filename:Union[pathlib.Path, str, None]=None,
-                     scale:float=1.0,
-                     offset:Union[np.ndarray, None]=None,
-                     keep_all=False) -> Union[List[geojson.Feature], str, None]:
+def dump_annotations(labels: Union[np.ndarray, None],
+                     object_classes: dict,
+                     filename: Union[pathlib.Path, str, None] = None,
+                     scale: float = 1.0,
+                     offset: Union[np.ndarray, None] = None,
+                     ndim: int = 2,
+                     keep_all: bool = False
+                     ) -> Union[List[geojson.Feature], pathlib.Path, str, None]:
+
+    if labels.ndim > ndim:
+        labels = labels[0]
+        classes = labels[1]
+
+        if object_classes is None:
+            object_classes = {
+                0: "cell"
+            }
+    else:
+        classes = np.zeros_like(labels)
+
+        if object_classes is None:
+            object_classes = {
+                0: "cell"
+            }
+
     annotations = []
-    for l in np.unique(labels):
-        if l == 0:
+    for curr_l in np.unique(labels):
+        if curr_l == 0:
             continue
-        mask = labels == l
+        mask = labels == curr_l
+        curr_class = np.max(classes[np.nonzero(mask)])
+        object_type = object_classes[curr_class]
+
         (contour_coords,
          hierarchy) = cv2.findContours(mask.astype(np.uint8),
-                                    mode=cv2.RETR_TREE,
-                                    method=cv2.CHAIN_APPROX_NONE)
+                                       mode=cv2.RETR_TREE,
+                                       method=cv2.CHAIN_APPROX_NONE)
 
         if keep_all:
             contours_indices = np.nonzero(hierarchy[0, :, -1] == -1)[0]
@@ -95,10 +109,11 @@ def dump_annotations(labels:Union[np.ndarray, None],
                 cc += offset[None, :]
 
             cc = np.vstack((cc, cc[0, None, :])) / scale
-        
+
             cc_poly = geojson.Polygon([cc.tolist()])
 
             annotations.append(geojson.Feature(geometry=cc_poly))
+
             annotations[-1]["properties"] = {"objectType": object_type}
 
     if len(annotations) and filename is not None:

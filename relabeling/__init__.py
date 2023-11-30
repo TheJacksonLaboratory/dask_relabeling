@@ -1,8 +1,5 @@
-from .relabeling import segmenting_tiles
-
-from .utils import save_intermediate_array
+from .relabeling import label
 
 __all__ = [
-    "segmenting_tiles",
-    "save_intermediate_array"
+    "label"
 ]
