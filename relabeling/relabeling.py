@@ -125,8 +125,22 @@ def _remove_overlapped_objects(labeled_image: np.array, overlap: List[int],
         shape=(labels_map.max() + 1, 1)
     )
 
-    labels_map = labels_map[labeled_image.ravel()]
-    labeled_image = labels_map.reshape(labeled_image.shape).todense()
+    if ndim == 2:
+        labeled_image = labeled_image[None, ...]
+
+    relabeled_image = np.empty_like(labeled_image)
+
+    # Sparse matrices cann only be reshaped into 2D matrices, so treat each
+    # stack as a different image.
+    for l_idx, l_img in enumerate(labeled_image):
+        labels_map = labels_map[l_img.ravel()]
+        rl_img = labels_map.reshape(l_img.shape)
+        rl_img.todense(out=relabeled_image[l_idx, ...])
+
+    if ndim > 2:
+        labeled_image = np.stack(relabeled_image, axis=0)
+    else:
+        labeled_image = relabeled_image[0]
 
     num_labels = np.max(labeled_image)
 
@@ -343,7 +357,6 @@ def _segment_overlapping(img: da.Array, seg_fn: Callable, overlap: List[int],
             block_labeled = save_intermediate_array(
                 block_labeled,
                 filename="temp_labeled.zarr",
-                overlap=overlap,
                 out_dir=persist,
                 compressor=Blosc(clevel=5)
             )
@@ -412,7 +425,6 @@ def _remove_overlapped_labels(labels: da.Array, overlap: List[int],
             block_relabeled = save_intermediate_array(
                 block_relabeled,
                 filename="temp_relabeled.zarr",
-                overlap=overlap,
                 out_dir=persist,
                 compressor=Blosc(clevel=5)
             )
@@ -466,7 +478,6 @@ def _merge_overlapped_tiles(labels: da.Array, overlap: List[int],
             merged_tiles = save_intermediate_array(
                 merged_tiles,
                 filename="temp_merged.zarr",
-                overlap=[(1 if to_geojson else 1) * ovp for ovp in overlap],
                 out_dir=persist,
                 compressor=Blosc(clevel=5)
             )

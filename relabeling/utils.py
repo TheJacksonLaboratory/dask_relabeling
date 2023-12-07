@@ -14,7 +14,6 @@ from typing import List, Union
 
 def save_intermediate_array(array: da.Array,
                             filename: Union[pathlib.Path, str],
-                            overlap: Union[List[int], None] = None,
                             out_dir: Union[pathlib.Path, str] = ".",
                             compressor: Codec = None,
                             object_codec: Codec = None):
@@ -24,15 +23,28 @@ def save_intermediate_array(array: da.Array,
     if ".zarr" not in filename:
         filename += ".zarr"
 
-    if overlap is not None:
+    chunksize = tuple(
+        max(cs_axis)
+        for cs_axis in array.chunks
+    )
+
+    needs_padding = any(
+        any(cs != max_cs for cs in cs_axis)
+        for cs_axis, max_cs in zip(array.chunks, chunksize)
+    )
+
+    if needs_padding:
         # Pad the image and rechunk it to have even-sized chunks when
         # saving as Zarr format. Only needed when using to generate GeoJson
         # files, since padding is kept.
-        chunksize = array.chunksize
+        padding = tuple(
+            (cs_max - cs_axis[0], 0)
+            for cs_axis, cs_max in zip(array.chunks, chunksize)
+        )
 
         array = da.pad(
             array,
-            tuple(tuple((ovp, 0) for ovp in overlap))
+            padding
         )
         array = da.rechunk(
             array,
@@ -48,8 +60,9 @@ def save_intermediate_array(array: da.Array,
 
     loaded_array = da.from_zarr(os.path.join(out_dir, filename))
 
-    if overlap is not None:
-        loaded_array = loaded_array[tuple(slice(ovp, None) for ovp in overlap)]
+    if needs_padding:
+        loaded_array = loaded_array[tuple(slice(pad[0], None)
+                                          for pad in padding)]
 
     return loaded_array
 

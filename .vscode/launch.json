@@ -11,6 +11,21 @@
             "program": "test_relabeling.py",
             "console": "integratedTerminal",
             "justMyCode": true
+        },
+        {
+            "name": "Python: Test viewer",
+            "type": "python",
+            "request": "launch",
+            "program": "examples/view_napari.py",
+            "args": [
+                "-i", "https://uk1s3.embassy.ebi.ac.uk/idr/zarr/v0.4/idr0101A/13457227.zarr/3",
+                "-o", "./temp_pyr.zarr",
+                "-s", "2",
+                "-a", "TCZYX",
+                "-sa", "YX"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
         }
     ]
 }

@@ -152,3 +152,5 @@ cython_debug/
 #.idea/
 test_relabeling.ipynb
 test_relabeling.py
+*.zarr
+view_napari.py
