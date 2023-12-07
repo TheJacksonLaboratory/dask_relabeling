@@ -154,3 +154,4 @@ test_relabeling.ipynb
 test_relabeling.py
 *.zarr
 view_napari.py
+.vscode/*
