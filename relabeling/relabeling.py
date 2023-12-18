@@ -326,13 +326,11 @@ def _segment_overlapping(img: da.Array, seg_fn: Callable, overlap: List[int],
     )
 
     labeled_chunks = tuple(
-        list(img.chunks[:(img.ndim - ndim)])
-        + [tuple(cs
-                 + (ovp if loc > 0 else 0)
-                 + (ovp if loc < len(cs_axis) - 1 else 0)
-                 for loc, cs in enumerate(cs_axis))
-           for ovp, cs_axis in zip(overlap, img.chunks[-ndim:])
-           ]
+        [tuple(cs + (ovp if loc > 0 else 0)
+               + (ovp if loc < len(cs_axis) - 1 else 0)
+               for loc, cs in enumerate(cs_axis))
+         for ovp, cs_axis in zip(overlap, img.chunks[-ndim:])
+         ]
     )
 
     block_labeled = da.map_blocks(
@@ -633,7 +631,7 @@ def label(img: da.Array, seg_fn: Callable,
     if out_dir is not None and not isinstance(out_dir, pathlib.Path):
         out_dir = pathlib.Path(out_dir)
 
-    if persist is not None and not isinstance(persist, pathlib.Path):
+    if isinstance(persist, str):
         persist = pathlib.Path(persist)
 
     img_rechunked = _prepare_input(img, ndim=ndim)

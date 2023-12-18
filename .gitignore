@@ -155,3 +155,4 @@ test_relabeling.py
 *.zarr
 view_napari.py
 .vscode/*
+*.yaml
