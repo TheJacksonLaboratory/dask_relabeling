@@ -67,35 +67,26 @@ def save_intermediate_array(array: da.Array,
     return loaded_array
 
 
-def dump_annotations(labels: Union[np.ndarray, None],
-                     object_classes: dict,
-                     filename: Union[pathlib.Path, str, None] = None,
-                     scale: float = 1.0,
-                     offset: Union[np.ndarray, None] = None,
-                     ndim: int = 2,
-                     keep_all: bool = False
-                     ) -> Union[List[geojson.Feature], pathlib.Path, str, None]:
+def labels2annotations(labels: np.ndarray,
+                       object_classes: dict,
+                       scale: float = 1.0,
+                       offset: Union[np.ndarray, None] = None,
+                       ndim: int = 2,
+                       keep_all: bool = False
+                       ) -> Union[List[geojson.Feature], pathlib.Path, None]:
 
     if labels.ndim > ndim:
         labels = labels[0]
         classes = labels[1]
 
-        if object_classes is None:
-            object_classes = {
-                0: "cell"
-            }
     else:
         classes = np.zeros_like(labels)
-
-        if object_classes is None:
-            object_classes = {
-                0: "cell"
-            }
 
     annotations = []
     for curr_l in np.unique(labels):
         if curr_l == 0:
             continue
+
         mask = labels == curr_l
         curr_class = np.max(classes[np.nonzero(mask)])
         object_type = object_classes[curr_class]
@@ -123,19 +114,6 @@ def dump_annotations(labels: Union[np.ndarray, None],
 
             cc = np.vstack((cc, cc[0, None, :])) / scale
 
-            cc_poly = geojson.Polygon([cc.tolist()])
-
-            annotations.append(geojson.Feature(geometry=cc_poly))
-
-            annotations[-1]["properties"] = {"objectType": object_type}
-
-    if len(annotations) and filename is not None:
-        with open(filename, "w") as fp:
-            geojson.dump(annotations, fp)
-
-        annotations = filename
-
-    elif len(annotations) == 0:
-        annotations = None
+            annotations.append([object_type, cc.tolist()])
 
     return annotations

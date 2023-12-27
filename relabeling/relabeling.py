@@ -15,11 +15,12 @@ import dask
 import dask.array as da
 from dask.callbacks import Callback
 from dask.diagnostics import ProgressBar
-from numcodecs import JSON, Pickle, Blosc
+from numcodecs import JSON, Blosc
+import geojson
 
 from typing import List, Tuple, Union, Callable
 
-from .utils import save_intermediate_array, dump_annotations
+from .utils import save_intermediate_array, labels2annotations
 
 
 def _segmentation_function(img_chunk: np.ndarray,
@@ -49,6 +50,7 @@ def _remove_overlapped_objects(labeled_image: np.array, overlap: List[int],
                                num_chunks: Tuple[int],
                                threshold: float = 0.05,
                                ndim: int = 2,
+                               relabel: bool = False,
                                ) -> np.ndarray:
     """Removes ambiguous objects detected in overlapping regions between
     adjacent chunks.
@@ -69,7 +71,7 @@ def _remove_overlapped_objects(labeled_image: np.array, overlap: List[int],
     )
 
     for lvl, (i, loc, nchk, ovp) in overlapped_sel:
-        if loc > 0 and lvl:
+        if ovp > 0 and loc > 0 and lvl:
             in_sel = tuple(
                 [slice(None)] * i
                 + [slice(ovp, 2 * ovp)]
@@ -81,7 +83,7 @@ def _remove_overlapped_objects(labeled_image: np.array, overlap: List[int],
                 + [slice(None)] * (ndim - 1 - i)
             )
 
-        elif loc < nchk - 1 and not lvl:
+        elif ovp > 0 and loc < nchk - 1 and not lvl:
             in_sel = tuple(
                 [slice(None)] * i
                 + [slice(-2 * ovp, -ovp)]
@@ -117,30 +119,34 @@ def _remove_overlapped_objects(labeled_image: np.array, overlap: List[int],
 
         labeled_image = np.where(labeled_image == mrg_l, 0, labeled_image)
 
-    # Relabel image to have a continuous sequence of indices
-    labels_map = np.unique(labeled_image)
-    labels_map = scipy.sparse.csr_matrix(
-        (np.arange(labels_map.size, dtype=np.int32),
-            (labels_map, np.zeros_like(labels_map))),
-        shape=(labels_map.max() + 1, 1)
-    )
+    if relabel and len(overlapped_labels):
+        pass
 
-    if ndim == 2:
-        labeled_image = labeled_image[None, ...]
+        # Relabel image to have a continuous sequence of indices
+        labels_map = np.unique(labeled_image)
 
-    relabeled_image = np.empty_like(labeled_image)
+        labels_map = scipy.sparse.csr_matrix(
+            (np.arange(labels_map.size, dtype=np.int32),
+             (labels_map, np.zeros_like(labels_map))),
+            shape=(labels_map.max() + 1, 1)
+        )
 
-    # Sparse matrices cann only be reshaped into 2D matrices, so treat each
-    # stack as a different image.
-    for l_idx, l_img in enumerate(labeled_image):
-        labels_map = labels_map[l_img.ravel()]
-        rl_img = labels_map.reshape(l_img.shape)
-        rl_img.todense(out=relabeled_image[l_idx, ...])
+        if ndim == 2:
+            labeled_image = labeled_image[None, ...]
 
-    if ndim > 2:
-        labeled_image = np.stack(relabeled_image, axis=0)
-    else:
-        labeled_image = relabeled_image[0]
+        relabeled_image = np.empty_like(labeled_image)
+
+        # Sparse matrices cann only be reshaped into 2D matrices, so treat each
+        # stack as a different image.
+        for l_idx, l_img in enumerate(labeled_image):
+            rl_map = labels_map[l_img.ravel()]
+            rl_img = rl_map.reshape(l_img.shape)
+            rl_img.todense(out=relabeled_image[l_idx, ...])
+
+        if ndim > 2:
+            labeled_image = np.stack(relabeled_image, axis=0)
+        else:
+            labeled_image = relabeled_image[0]
 
     num_labels = np.max(labeled_image)
 
@@ -156,6 +162,7 @@ def _delayed_remove_overlapped_objects(labeled_image: da.Array,
                                        num_chunks: Tuple[int],
                                        threshold: float = 0.05,
                                        ndim: int = 2,
+                                       relabel: bool = False,
                                        ) -> da.Array:
     """Delayed version of `remove_overlapped_objects` that allows to run the
     removal process lazily.
@@ -166,7 +173,8 @@ def _delayed_remove_overlapped_objects(labeled_image: da.Array,
                                         chunk_location=chunk_location,
                                         num_chunks=num_chunks,
                                         threshold=threshold,
-                                        ndim=ndim)
+                                        ndim=ndim,
+                                        relabel=relabel)
 
     n = dask.delayed(np.int32)(n)
 
@@ -188,6 +196,8 @@ def _merge_tiles(tile: np.ndarray, overlap: List[int],
 
     # Compute selections from regions to merge
     base_src_sel = tuple(
+        slice(None)
+        if ovp < 1 else
         slice(ovp if loc > 0 else 0, -ovp if loc < nchk - 1 else None)
         for loc, nchk, ovp in zip(chunk_location, num_chunks, overlap)
     )
@@ -222,6 +232,8 @@ def _merge_tiles(tile: np.ndarray, overlap: List[int],
 
     valid_src_sel = (
         map(lambda loc, nchk, ovp, level:
+            slice(None)
+            if ovp < 1 else
             slice(ovp if loc > 0 else 0, -ovp if loc < nchk - 1 else None)
             if level is None else
             slice(0, ovp) if not level else slice(-ovp, None),
@@ -232,7 +244,7 @@ def _merge_tiles(tile: np.ndarray, overlap: List[int],
     valid_dst_sel = (
         map(lambda loc, nchk, ovp, level:
             slice(None)
-            if level is None else
+            if level is None or ovp < 1 else
             slice(ovp if loc > 0 else 0, ovp * (2 if loc > 0 else 1))
             if not level else
             slice(-ovp * (2 if loc < nchk - 1 else 1),
@@ -255,6 +267,8 @@ def _merge_tiles(tile: np.ndarray, overlap: List[int],
                 merging_tile
             )
 
+            print(f"{tuple(src_sel)}->{dst_sel}, merged {l_label}")
+
     if to_geojson:
         merged_tile = merging_tile
     else:
@@ -263,11 +277,11 @@ def _merge_tiles(tile: np.ndarray, overlap: List[int],
     return merged_tile
 
 
-def _dump_chunk_geojson(merged_tile: np.ndarray, overlap: List[int],
-                        object_classes: dict,
-                        out_dir: Union[pathlib.Path, None] = None,
-                        ndim: int = 2,
-                        block_info: Union[dict, None] = None) -> np.ndarray:
+def _compute_features_tiles(merged_tile: np.ndarray, overlap: List[int],
+                            object_classes: dict,
+                            ndim: int = 2,
+                            block_info: Union[dict, None] = None
+                            ) -> np.ndarray:
     """Convert detections into GeoJson Feature objects containing the contour
     and class of each detected object in this chunk.
     """
@@ -287,24 +301,40 @@ def _dump_chunk_geojson(merged_tile: np.ndarray, overlap: List[int],
                         for loc, ovp in zip(chunk_location, overlap)])
     offset = offset[[1, 0]]
 
-    out_fn = "detections-" + "-".join(map(str, chunk_location)) + ".geojson"
-    out_fn = out_dir / out_fn
-
-    # TODO: Pass predicted classes as additional dask.Array, and object
-    # types as dictionaries
-    detections = dump_annotations(
+    detections = labels2annotations(
         merged_tile,
         object_classes=object_classes,
-        filename=out_fn,
         scale=1.0,
         offset=offset,
         ndim=ndim,
         keep_all=False
     )
 
-    merged_tile = np.array([[detections]], dtype=object)
+    merged_tile = np.array([[{"detections": detections}]], dtype=object)
 
     return merged_tile
+
+
+def _dump_annotation_tiles(annotated_tile: np.ndarray, out_dir: pathlib.Path,
+                           block_info: Union[dict, None] = None
+                           ) -> None:
+    filename = (f"detection-"
+                f"{'-'.join(map(str, block_info[None]['chunk-location']))}"
+                f".geojson")
+    filename = out_dir / filename
+
+    annotations = []
+    for object_type, cc in annotated_tile[0, 0]["detections"]:
+        cc_poly = geojson.Polygon([cc])
+
+        annotations.append(geojson.Feature(geometry=cc_poly))
+        annotations[-1]["properties"] = {"objectType": object_type}
+
+    if len(annotations):
+        with open(filename, "w") as fp:
+            geojson.dump(annotations, fp)
+
+    return np.array([[filename]], dtype=object)
 
 
 def _segment_overlapping(img: da.Array, seg_fn: Callable, overlap: List[int],
@@ -392,7 +422,8 @@ def _remove_overlapped_labels(labels: da.Array, overlap: List[int],
          threshold=threshold,
          num_chunks=num_chunks,
          chunk_location=tuple([0] * ndim),
-         ndim=ndim)
+         ndim=ndim,
+         relabel=relabel)
 
     for index, input_block in block_iter:
         (relabeled_block,
@@ -401,7 +432,8 @@ def _remove_overlapped_labels(labels: da.Array, overlap: List[int],
                                                  threshold=threshold,
                                                  chunk_location=index,
                                                  num_chunks=num_chunks,
-                                                 ndim=ndim)
+                                                 ndim=ndim,
+                                                 relabel=relabel)
 
         if relabel:
             block_label_offset = da.where(relabeled_block > 0, total, 0)
@@ -439,15 +471,18 @@ def _merge_overlapped_tiles(labels: da.Array, overlap: List[int],
                             persist: Union[bool, pathlib.Path] = False,
                             progressbar: bool = False) -> da.Array:
 
-    merged_chunks = tuple(
-        list(labels.chunks[:(labels.ndim - ndim)])
-        + [tuple(cs
-                 - (ovp if loc > 0 else 0)
-                 - (ovp if loc < len(cs_axis) - 1 else 0)
-                 for loc, cs in enumerate(cs_axis))
-           for ovp, cs_axis in zip(overlap, labels.chunks[-ndim:])
-           ]
-    )
+    if to_geojson:
+        merged_chunks = labels.chunks
+    else:
+        merged_chunks = tuple(
+            list(labels.chunks[:(labels.ndim - ndim)])
+            + [tuple(cs
+                     - (ovp if loc > 0 else 0)
+                     - (ovp if loc < len(cs_axis) - 1 else 0)
+                     for loc, cs in enumerate(cs_axis))
+               for ovp, cs_axis in zip(overlap, labels.chunks[-ndim:])
+               ]
+        )
 
     merged_depth = tuple([0] * (labels.ndim - ndim)
                          + [(ovp, ovp) for ovp in overlap])
@@ -486,23 +521,26 @@ def _merge_overlapped_tiles(labels: da.Array, overlap: List[int],
     return merged_tiles
 
 
-def _dump_merged_tiles(labels: da.Array,
-                       overlap: List[int],
-                       object_classes: dict,
-                       mask: Union[da.Array, None] = None,
-                       ndim: int = 2,
-                       mask_scale: float = 1.0,
-                       out_dir: Union[pathlib.Path, None] = None,
-                       persist: Union[bool, pathlib.Path] = False,
-                       progressbar: bool = False
-                       ) -> Union[da.Array, pathlib.Path]:
+def _merge_features_tiles(labels: da.Array,
+                          overlap: List[int],
+                          object_classes: Union[dict, None] = None,
+                          mask: Union[da.Array, None] = None,
+                          ndim: int = 2,
+                          mask_scale: float = 1.0,
+                          out_dir: Union[pathlib.Path, None] = None,
+                          persist: Union[bool, pathlib.Path] = False,
+                          progressbar: bool = False
+                          ) -> Union[da.Array, pathlib.Path]:
+    if object_classes is None:
+        object_classes = {
+            0: "cell"
+        }
 
     labels_features = da.map_blocks(
-        _dump_chunk_geojson,
+        _compute_features_tiles,
         labels,
         overlap=overlap,
         object_classes=object_classes,
-        out_dir=out_dir,
         ndim=ndim,
         chunks=(1, 1),
         dtype=object,
@@ -518,7 +556,16 @@ def _dump_merged_tiles(labels: da.Array,
         os.makedirs(out_dir, exist_ok=True)
 
         with progressbar_callback():
-            labels_features = labels_features.persist()
+            if isinstance(persist, pathlib.Path):
+                labels_features = save_intermediate_array(
+                    labels_features,
+                    filename="temp_features.zarr",
+                    out_dir=persist,
+                    object_codec=JSON()
+                )
+
+            elif persist:
+                labels_features = labels_features.persist()
 
         if mask is not None:
             padded_mask = np.pad(mask, tuple((1, 0) for _ in range(mask.ndim)))
@@ -531,16 +578,37 @@ def _dump_merged_tiles(labels: da.Array,
             padded_mask = np.ones([s // 16 for s in labels.shape],
                                   dtype=bool)
 
-        dump_annotations(
+        filenames = da.map_blocks(
+            _dump_annotation_tiles,
+            labels_features,
+            out_dir=out_dir,
+            dtype=object,
+            meta=np.empty((0, ), dtype=object)
+        )
+
+        mask_ccs = labels2annotations(
             padded_mask,
             object_classes={0: "annotation"},
-            filename=out_dir / "annotations.geojson",
             scale=mask_scale,
             offset=None,
             ndim=2,
             keep_all=True
         )
 
+        mask_annotations = []
+        for object_type, cc in mask_ccs:
+            cc_poly = geojson.Polygon([cc])
+
+            mask_annotations.append(geojson.Feature(geometry=cc_poly))
+            mask_annotations[-1]["properties"] = {"objectType": object_type}
+
+        mask_annotations_filename = out_dir / "annotations.geojson"
+
+        if len(mask_annotations):
+            with open(mask_annotations_filename, "w") as fp:
+                geojson.dump(mask_annotations, fp)
+
+        filenames.compute()
         out_fn = pathlib.Path(str(out_dir) + "-detections.zip")
         with zipfile.ZipFile(out_fn, "w", zipfile.ZIP_DEFLATED,
                              compresslevel=9) as archive:
@@ -554,12 +622,10 @@ def _dump_merged_tiles(labels: da.Array,
 
 
 def _prepare_input(img: da.Array, ndim: int = 2) -> da.Array:
-    chunksize = list(img.chunksize[-ndim:])
-
     # Prepare input for overlap.
     padding = [(0, 0)] * (img.ndim - ndim)
     padding += [(0, (cs - s) % cs)
-                for s, cs in zip(img.shape[-ndim:], chunksize)]
+                for s, cs in zip(img.shape[-ndim:], img.chunksize[-ndim:])]
 
     if any(map(any, padding)):
         img_padded = da.pad(
@@ -567,7 +633,7 @@ def _prepare_input(img: da.Array, ndim: int = 2) -> da.Array:
             padding
         )
 
-        img_rechunked = da.rechunk(img_padded, chunksize)
+        img_rechunked = da.rechunk(img_padded, img.chunksize)
 
     else:
         img_rechunked = img
@@ -681,7 +747,7 @@ def label(img: da.Array, seg_fn: Callable,
                                 if labels.ndim - ndim > 0 else 1)
             object_classes = {class_id: "cell" for class_id in classes_ids}
 
-        labels = _dump_merged_tiles(
+        labels = _merge_features_tiles(
             labels,
             overlap=overlap,
             object_classes=object_classes,
