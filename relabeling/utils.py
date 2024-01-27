@@ -1,5 +1,6 @@
 import os
 import pathlib
+import itertools
 
 import numpy as np
 import cv2
@@ -12,11 +13,72 @@ from numcodecs.abc import Codec
 from typing import List, Union
 
 
+def get_valid_overlaps(chunk_location: List[int], num_chunks: List[int],
+                       ndim: int):
+    valid_indices = []
+
+    for axis in range(ndim):
+        for comb, k in itertools.product(
+          itertools.combinations(range(ndim), axis),
+          range(2 ** (ndim - axis))):
+            indices = list(
+                np.unpackbits(np.array([k], dtype=np.uint8), count=ndim - axis,
+                              bitorder="little")
+            )
+
+            # Insert the fixed indices into the current indices list
+            for fixed in comb:
+                indices[fixed:fixed] = [None]
+
+            if any(map(lambda level, coord, axis_chunks:
+                       level is not None and (
+                           coord % 2 == 0
+                           or coord == 0 and not level
+                           or coord >= axis_chunks - 1 and level),
+                       indices, chunk_location, num_chunks)):
+                continue
+
+            valid_indices.append(indices)
+
+    return valid_indices
+
+
+def get_dest_selection(coord: int, axis_chunks: int, axis_overlap: int,
+                       axis_level: Union[int, None] = None):
+    if axis_level is None:
+        sel = slice(None)
+
+    elif axis_level:
+        sel = slice(-axis_overlap * (2 if coord < axis_chunks - 1 else 1),
+                    -axis_overlap if coord < axis_chunks - 1 else None)
+
+    else:
+        sel = slice(axis_overlap if coord > 0 else 0,
+                    axis_overlap * (2 if coord > 0 else 1))
+
+    return sel
+
+
+def get_source_selection(coord: int, axis_chunks: int, axis_overlap: int,
+                         axis_level: Union[int, None] = None):
+    if axis_level is None:
+        sel = slice(axis_overlap if coord > 0 else None,
+                    -axis_overlap if coord < axis_chunks - 1 else None)
+
+    elif axis_level:
+        sel = slice(-axis_overlap if coord < axis_chunks - 1 else None, None)
+
+    else:
+        sel = slice(0, axis_overlap if coord > 0 else None)
+
+    return sel
+
+
 def save_intermediate_array(array: da.Array,
                             filename: Union[pathlib.Path, str],
                             out_dir: Union[pathlib.Path, str] = ".",
                             compressor: Codec = None,
-                            object_codec: Codec = None):
+                            object_codec: Codec = None) -> bool:
     if not os.path.isdir(out_dir):
         os.makedirs(out_dir, exist_ok=True)
 
@@ -46,10 +108,14 @@ def save_intermediate_array(array: da.Array,
             array,
             padding
         )
+
         array = da.rechunk(
             array,
             chunksize
         )
+
+    else:
+        padding = None
 
     array.to_zarr(
         out_dir / filename,
@@ -58,23 +124,27 @@ def save_intermediate_array(array: da.Array,
         overwrite=True
     )
 
-    loaded_array = da.from_zarr(os.path.join(out_dir, filename))
+    return padding
 
-    if needs_padding:
+
+def load_intermediate_array(filename: Union[pathlib.Path, str],
+                            padding: Union[List[int], None] = None
+                            ) -> da.Array:
+    loaded_array = da.from_zarr(filename)
+
+    if padding is not None:
         loaded_array = loaded_array[tuple(slice(pad[0], None)
                                           for pad in padding)]
 
     return loaded_array
 
 
-def labels2annotations(labels: np.ndarray,
-                       object_classes: dict,
-                       scale: float = 1.0,
-                       offset: Union[np.ndarray, None] = None,
-                       ndim: int = 2,
-                       keep_all: bool = False
-                       ) -> Union[List[geojson.Feature], pathlib.Path, None]:
-
+def labels_to_annotations(labels: np.ndarray, object_classes: dict,
+                          offset: Union[np.ndarray, None] = None,
+                          ndim: int = 2,
+                          keep_all: bool = False
+                          ) -> Union[List[geojson.Feature], pathlib.Path,
+                                     None]:
     if labels.ndim > ndim:
         labels = labels[0]
         classes = labels[1]
@@ -112,7 +182,7 @@ def labels2annotations(labels: np.ndarray,
             if offset is not None:
                 cc += offset[None, :]
 
-            cc = np.vstack((cc, cc[0, None, :])) / scale
+            cc = np.vstack((cc, cc[0, None, :]))
 
             annotations.append([object_type, cc.tolist()])
 

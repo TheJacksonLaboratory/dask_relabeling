@@ -1,5 +1,6 @@
-from .relabeling import label
+from .relabeling import label, dump_to_geojson
 
 __all__ = [
-    "label"
+    "label",
+    "dump_to_geojson"
 ]
