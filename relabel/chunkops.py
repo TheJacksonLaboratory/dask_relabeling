@@ -5,12 +5,13 @@ import numpy as np
 import scipy
 import geojson
 
+from numpy.typing import ArrayLike
 from typing import List, Union, Callable
 
 from . import utils
 
 
-def segmentation_wrapper(img_chunk: np.ndarray, segmentation_fn: Callable,
+def segmentation_wrapper(img_chunk: ArrayLike, segmentation_fn: Callable,
                          **segmentation_fn_kwargs) -> np.ndarray:
     """Wrapper to apply a segmentation function to each chunk.
     """
@@ -21,7 +22,7 @@ def segmentation_wrapper(img_chunk: np.ndarray, segmentation_fn: Callable,
     return labeled_image
 
 
-def remove_overlapped_objects(labeled_image: np.array, overlaps: List[int],
+def remove_overlapped_objects(labeled_image: ArrayLike, overlaps: List[int],
                               threshold: float = 0.05,
                               ndim: int = 2,
                               block_info: Union[dict, None] = None
@@ -102,7 +103,7 @@ def remove_overlapped_objects(labeled_image: np.array, overlaps: List[int],
     return labeled_image
 
 
-def sort_indices(labeled_image: np.array, ndim: int = 2):
+def sort_indices(labeled_image: ArrayLike, ndim: int = 2) -> np.ndarray:
     """Sort label indices to have them as a continuous sequence.
     """
     if labeled_image.ndim > ndim:
@@ -144,8 +145,8 @@ def sort_indices(labeled_image: np.array, ndim: int = 2):
     return labeled_image
 
 
-def merge_tiles(tile: np.ndarray, overlaps: List[int],
-                to_geojson: bool = False,
+def merge_tiles(tile: ArrayLike, overlaps: List[int],
+                offset_labels: bool = False,
                 block_info: Union[dict, None] = None) -> np.ndarray:
     """Merge objects detected in overlapping regions from adjacent chunks of
     this chunk.
@@ -166,10 +167,10 @@ def merge_tiles(tile: np.ndarray, overlaps: List[int],
 
     merging_tile = np.copy(tile[base_src_sel])
 
-    if to_geojson:
+    if offset_labels:
         offset_index = np.max(merging_tile)
-        offset_labels = np.where(merging_tile, offset_index + 1, 0)
-        merging_tile = merging_tile - offset_labels
+        offsetted_labels = np.where(merging_tile, offset_index + 1, 0)
+        merging_tile = merging_tile - offsetted_labels
 
     left_tile = np.empty_like(merging_tile)
 
@@ -187,42 +188,37 @@ def merge_tiles(tile: np.ndarray, overlaps: List[int],
 
             merging_tile = np.where(
                 left_tile == l_label,
-                0 if to_geojson else l_label,
+                0 if offset_labels else l_label,
                 merging_tile
             )
 
-    if to_geojson:
-        merged_tile = merging_tile
-    else:
-        merged_tile = merging_tile[base_src_sel]
+    if not offset_labels:
+        merging_tile = merging_tile[base_src_sel]
 
-    return merged_tile
+    return merging_tile
 
 
-def compute_features(merged_tile: np.ndarray, overlaps: List[int],
-                     object_classes: dict,
-                     ndim: int = 2,
-                     block_info: Union[dict, None] = None
-                     ) -> np.ndarray:
+def compute_object_features(merged_tile: ArrayLike, overlaps: List[int],
+                            object_classes: dict,
+                            ndim: int = 2,
+                            block_info: Union[dict, None] = None
+                            ) -> np.ndarray:
     """Convert detections into GeoJson Feature objects containing the contour
     and class of each detected object in this chunk.
     """
-    num_chunks = block_info[None]["num-chunks"]
-    chunk_location = block_info[None]["chunk-location"]
-    chunk_shape = [
-        dim - (axis_overlap if coord > 0 else 0)
-        - (axis_overlap if coord < axis_chunks - 1 else 0)
-        for dim, coord, axis_chunks, axis_overlap in zip(merged_tile.shape,
-                                                         chunk_location,
-                                                         num_chunks,
-                                                         overlaps)
-    ]
+    array_location = block_info[0]['array-location']
+    chunk_location = block_info[None]['chunk-location']
 
-    offset = np.array(chunk_location, dtype=np.int64)
-    offset *= np.array(chunk_shape)
-    offset -= np.array([axis_overlap if coord > 0 else 0
-                        for coord, axis_overlap in zip(chunk_location,
-                                                       overlaps)])
+    offset_overlaps = list(
+        map(lambda coord, axis_overlap:
+            2 * coord * axis_overlap,
+            chunk_location, overlaps)
+    )
+
+    array_location = np.array(array_location, dtype=np.int64)[:, 0]
+    offset_overlaps = np.array(offset_overlaps, dtype=np.int64)
+
+    offset = array_location - offset_overlaps
     offset = offset[[1, 0]]
 
     detections = utils.labels_to_annotations(
@@ -238,14 +234,9 @@ def compute_features(merged_tile: np.ndarray, overlaps: List[int],
     return merged_tile
 
 
-def dump_annotation(annotated_tile: np.ndarray, out_dir: pathlib.Path,
+def dump_annotation(annotated_tile: ArrayLike, out_dir: pathlib.Path,
                     block_info: Union[dict, None] = None
-                    ) -> None:
-    filename = (f"detection-"
-                f"{'-'.join(map(str, block_info[None]['chunk-location']))}"
-                f".geojson")
-    filename = out_dir / filename
-
+                    ) -> np.ndarray:
     annotations = []
     for object_type, cc in annotated_tile[0, 0]["detections"]:
         cc_poly = geojson.Polygon([cc])
@@ -254,7 +245,11 @@ def dump_annotation(annotated_tile: np.ndarray, out_dir: pathlib.Path,
         annotations[-1]["properties"] = {"objectType": object_type}
 
     if len(annotations):
+        filename = (f"detection-"
+                    f"{'-'.join(map(str, block_info[None]['chunk-location']))}"
+                    f".geojson")
+        filename = out_dir / filename
         with open(filename, "w") as fp:
             geojson.dump(annotations, fp)
 
-    return np.array([[filename]], dtype=object)
+    return np.array([[None]], dtype=object)

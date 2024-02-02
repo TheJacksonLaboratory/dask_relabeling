@@ -19,12 +19,12 @@ from . import utils
 from . import chunkops
 
 
-def _segment_overlapping(img: da.Array, seg_fn: Callable, overlaps: List[int],
-                         ndim: int = 2,
-                         segmentation_fn_kwargs: Union[dict, None] = None,
-                         persist: Union[bool, pathlib.Path] = False,
-                         progressbar: bool = False
-                         ) -> da.Array:
+def segment_overlapped_input(img: da.Array, seg_fn: Callable,
+                             overlaps: List[int],
+                             ndim: int = 2,
+                             segmentation_fn_kwargs: Union[dict, None] = None,
+                             persist: Union[bool, pathlib.Path] = False,
+                             progressbar: bool = False) -> da.Array:
 
     if segmentation_fn_kwargs is None:
         segmentation_fn_kwargs = {}
@@ -44,7 +44,7 @@ def _segment_overlapping(img: da.Array, seg_fn: Callable, overlaps: List[int],
          ]
     )
 
-    block_labeled = da.map_blocks(
+    labeled = da.map_blocks(
         chunkops.segmentation_wrapper,
         img_overlapped,
         seg_fn,
@@ -63,31 +63,30 @@ def _segment_overlapping(img: da.Array, seg_fn: Callable, overlaps: List[int],
     with progressbar_callback():
         if isinstance(persist, pathlib.Path):
             padding = utils.save_intermediate_array(
-                block_labeled,
+                labeled,
                 filename="temp_labeled.zarr",
                 out_dir=persist,
                 compressor=Blosc(clevel=5)
             )
 
-            block_labeled = utils.load_intermediate_array(
+            labeled = utils.load_intermediate_array(
                 filename=persist / "temp_labeled.zarr",
                 padding=padding
             )
 
         elif persist:
-            block_labeled = block_labeled.persist()
+            labeled = labeled.persist()
 
-    return block_labeled
+    return labeled
 
 
-def _remove_overlapped_labels(labels: da.Array, overlaps: List[int],
-                              threshold: float = 0.05,
-                              ndim: int = 2,
-                              relabel: bool = False,
-                              persist: Union[bool, pathlib.Path] = False,
-                              progressbar: bool = False) -> da.Array:
+def remove_overlapped_labels(labels: da.Array, overlaps: List[int],
+                             threshold: float = 0.05,
+                             ndim: int = 2,
+                             persist: Union[bool, pathlib.Path] = False,
+                             progressbar: bool = False) -> da.Array:
 
-    block_relabeled = da.map_blocks(
+    removed = da.map_blocks(
         chunkops.remove_overlapped_objects,
         labels,
         overlaps=overlaps,
@@ -97,27 +96,58 @@ def _remove_overlapped_labels(labels: da.Array, overlaps: List[int],
         meta=np.empty((0, ), dtype=np.int32)
     )
 
-    if relabel:
-        block_relabeled = da.map_blocks(
-            chunkops.sort_indices,
-            block_relabeled,
-            ndim=ndim,
-            dtype=np.int32,
-            meta=np.empty((0, ), dtype=np.int32)
-        )
+    if progressbar:
+        progressbar_callback = ProgressBar
+    else:
+        progressbar_callback = Callback
 
-        # Relabel each chunk to have globally unique label indices.
-        total = 0
+    with progressbar_callback():
+        if isinstance(persist, pathlib.Path):
+            padding = utils.save_intermediate_array(
+                removed,
+                filename="temp_removed.zarr",
+                out_dir=persist,
+                compressor=Blosc(clevel=5)
+            )
 
-        for relabeled_block in map(
-          functools.partial(operator.getitem, block_relabeled),
-          da.core.slices_from_chunks(block_relabeled.chunks)):
-            n = da.max(relabeled_block)
+            removed = utils.load_intermediate_array(
+                filename=persist / "temp_removed.zarr",
+                padding=padding
+            )
 
-            block_label_offset = da.where(relabeled_block > 0, total, 0)
-            relabeled_block += block_label_offset
+            shutil.rmtree(persist / "temp_labeled.zarr")
 
-            total += n
+        elif persist:
+            removed = removed.persist()
+
+    return removed
+
+
+def sort_overlapped_labels(labels: da.Array, ndim: int = 2,
+                           persist: Union[bool, pathlib.Path] = False,
+                           progressbar: bool = False) -> da.Array:
+    sorted = da.map_blocks(
+        chunkops.sort_indices,
+        labels,
+        ndim=ndim,
+        dtype=np.int32,
+        meta=np.empty((0, ), dtype=np.int32)
+    )
+
+    # Relabel each chunk to have globally unique label indices.
+    total = 0
+
+    sorted_globally = da.zeros_like(sorted)
+
+    indices = da.core.slices_from_chunks(sorted.chunks)
+
+    for idx in indices:
+        n = da.max(sorted[idx])
+
+        label_offset = da.where(sorted[idx] > 0, total, 0)
+        sorted_globally[idx] = sorted[idx] + label_offset
+
+        total += n
 
     if progressbar:
         progressbar_callback = ProgressBar
@@ -127,34 +157,32 @@ def _remove_overlapped_labels(labels: da.Array, overlaps: List[int],
     with progressbar_callback():
         if isinstance(persist, pathlib.Path):
             padding = utils.save_intermediate_array(
-                block_relabeled,
-                filename="temp_relabeled.zarr",
+                sorted_globally,
+                filename="temp_sorted.zarr",
                 out_dir=persist,
                 compressor=Blosc(clevel=5)
             )
 
-            block_relabeled = utils.load_intermediate_array(
-                filename=persist / "temp_relabeled.zarr",
+            sorted_globally = utils.load_intermediate_array(
+                filename=persist / "temp_sorted.zarr",
                 padding=padding
             )
 
-            shutil.rmtree(persist / "temp_labeled.zarr")
+            shutil.rmtree(persist / "temp_removed.zarr")
 
         elif persist:
-            block_relabeled = block_relabeled.persist()
+            sorted_globally = sorted_globally.persist()
 
-    return block_relabeled
+    return sorted_globally
 
 
-def _merge_overlapped_tiles(labels: da.Array, overlaps: List[int],
-                            ndim: int = 2,
-                            to_geojson: bool = False,
-                            persist: Union[bool, pathlib.Path] = False,
-                            progressbar: bool = False) -> da.Array:
+def merge_overlapped_tiles(labels: da.Array, overlaps: List[int],
+                           ndim: int = 2,
+                           offset_labels: bool = False,
+                           persist: Union[bool, pathlib.Path] = False,
+                           progressbar: bool = False) -> da.Array:
 
-    if to_geojson:
-        merged_chunks = labels.chunks
-    else:
+    if offset_labels:
         merged_chunks = tuple(
             list(labels.chunks[:(labels.ndim - ndim)])
             + [tuple(cs
@@ -165,15 +193,18 @@ def _merge_overlapped_tiles(labels: da.Array, overlaps: List[int],
                ]
         )
 
+    else:
+        merged_chunks = labels.chunks
+
     merged_depth = tuple([0] * (labels.ndim - ndim)
                          + [(overlap, overlap) for overlap in overlaps])
 
     # Merge the overlapped objects from adjacent chunks for all chunk tiles.
-    merged_tiles = da.map_overlap(
+    merged = da.map_overlap(
         chunkops.merge_tiles,
         labels,
         overlaps=overlaps,
-        to_geojson=to_geojson,
+        offset_labels=offset_labels,
         depth=merged_depth,
         boundary=None,
         trim=False,
@@ -190,40 +221,40 @@ def _merge_overlapped_tiles(labels: da.Array, overlaps: List[int],
     with progressbar_callback():
         if isinstance(persist, pathlib.Path):
             padding = utils.save_intermediate_array(
-                merged_tiles,
+                merged,
                 filename="temp_merged.zarr",
                 out_dir=persist,
                 compressor=Blosc(clevel=5)
             )
 
-            merged_tiles = utils.load_intermediate_array(
+            merged = utils.load_intermediate_array(
                 filename=persist / "temp_merged.zarr",
                 padding=padding
             )
 
-            shutil.rmtree(persist / "temp_relabeled.zarr")
+            shutil.rmtree(persist / "temp_sorted.zarr")
 
         elif persist:
-            merged_tiles = merged_tiles.persist()
+            merged = merged.persist()
 
-    return merged_tiles
+    return merged
 
 
-def _merge_features_tiles(labels: da.Array,
-                          overlaps: List[int],
-                          object_classes: Union[dict, None] = None,
-                          ndim: int = 2,
-                          out_dir: Union[pathlib.Path, None] = None,
-                          persist: Union[bool, pathlib.Path] = False,
-                          progressbar: bool = False
-                          ) -> Union[da.Array, pathlib.Path]:
+def merge_features_tiles(labels: da.Array,
+                         overlaps: List[int],
+                         object_classes: Union[dict, None] = None,
+                         ndim: int = 2,
+                         out_dir: Union[pathlib.Path, None] = None,
+                         persist: Union[bool, pathlib.Path] = False,
+                         progressbar: bool = False
+                         ) -> Union[da.Array, pathlib.Path]:
     if object_classes is None:
         object_classes = {
             0: "cell"
         }
 
     labels_features = da.map_blocks(
-        chunkops.compute_features,
+        chunkops.compute_object_features,
         labels,
         overlaps=overlaps,
         object_classes=object_classes,
@@ -287,7 +318,7 @@ def _merge_features_tiles(labels: da.Array,
     return labels_features
 
 
-def _prepare_input(img: da.Array, ndim: int = 2) -> da.Array:
+def prepare_input(img: da.Array, ndim: int = 2) -> da.Array:
     # Prepare input for overlap.
     padding = [(0, 0)] * (img.ndim - ndim)
     padding += [(0, (cs - dim) % cs)
@@ -314,8 +345,7 @@ def label(img: da.Array, seg_fn: Callable,
           sort_labels: bool = False,
           persist: Union[bool, pathlib.Path, str] = False,
           progressbar: bool = False,
-          segmentation_fn_kwargs: Union[dict, None] = None
-          ) -> da.Array:
+          segmentation_fn_kwargs: Union[dict, None] = None) -> da.Array:
 
     if isinstance(overlaps, int):
         overlaps = [overlaps] * ndim
@@ -323,9 +353,9 @@ def label(img: da.Array, seg_fn: Callable,
     if isinstance(persist, str):
         persist = pathlib.Path(persist)
 
-    img_rechunked = _prepare_input(img, ndim=ndim)
+    img_rechunked = prepare_input(img, ndim=ndim)
 
-    labels = _segment_overlapping(
+    labels = segment_overlapped_input(
         img_rechunked,
         seg_fn=seg_fn,
         overlaps=overlaps,
@@ -335,21 +365,28 @@ def label(img: da.Array, seg_fn: Callable,
         progressbar=progressbar
     )
 
-    labels = _remove_overlapped_labels(
+    labels = remove_overlapped_labels(
         labels,
         overlaps=overlaps,
         threshold=threshold,
         ndim=ndim,
-        relabel=not sort_labels,
         persist=persist,
         progressbar=progressbar
     )
 
-    labels = _merge_overlapped_tiles(
+    if sort_labels:
+        labels = sort_overlapped_labels(
+            labels,
+            ndim=ndim,
+            persist=persist,
+            progressbar=progressbar
+        )
+
+    labels = merge_overlapped_tiles(
         labels,
         overlaps=overlaps,
         ndim=ndim,
-        to_geojson=sort_labels,
+        offset_labels=not sort_labels,
         persist=persist,
         progressbar=progressbar
     )
@@ -378,7 +415,7 @@ def dump_to_geojson(labels: da.Array, overlaps: Union[int, List[int]] = 50,
                             if labels.ndim - ndim > 0 else 1)
         object_classes = {class_id: "cell" for class_id in classes_ids}
 
-    labels = _merge_features_tiles(
+    labels = merge_features_tiles(
         labels,
         overlaps=overlaps,
         object_classes=object_classes,

@@ -10,11 +10,11 @@ import dask.array as da
 
 from numcodecs.abc import Codec
 
-from typing import List, Union
+from typing import List, Tuple, Union
 
 
 def get_valid_overlaps(chunk_location: List[int], num_chunks: List[int],
-                       ndim: int):
+                       ndim: int) -> List[List[int]]:
     valid_indices = []
 
     for axis in range(ndim):
@@ -44,7 +44,7 @@ def get_valid_overlaps(chunk_location: List[int], num_chunks: List[int],
 
 
 def get_dest_selection(coord: int, axis_chunks: int, axis_overlap: int,
-                       axis_level: Union[int, None] = None):
+                       axis_level: Union[int, None] = None) -> slice:
     if axis_level is None:
         sel = slice(None)
 
@@ -60,7 +60,7 @@ def get_dest_selection(coord: int, axis_chunks: int, axis_overlap: int,
 
 
 def get_source_selection(coord: int, axis_chunks: int, axis_overlap: int,
-                         axis_level: Union[int, None] = None):
+                         axis_level: Union[int, None] = None) -> slice:
     if axis_level is None:
         sel = slice(axis_overlap if coord > 0 else None,
                     -axis_overlap if coord < axis_chunks - 1 else None)
@@ -78,7 +78,8 @@ def save_intermediate_array(array: da.Array,
                             filename: Union[pathlib.Path, str],
                             out_dir: Union[pathlib.Path, str] = ".",
                             compressor: Codec = None,
-                            object_codec: Codec = None) -> bool:
+                            object_codec: Codec = None
+                            ) -> Union[Tuple[Tuple[int]], None]:
     if not os.path.isdir(out_dir):
         os.makedirs(out_dir, exist_ok=True)
 

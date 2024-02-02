@@ -156,3 +156,4 @@ test_relabeling.py
 view_napari.py
 .vscode/*
 *.yaml
+example_relabeling.py
