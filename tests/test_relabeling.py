@@ -2,95 +2,47 @@ import pytest
 
 import tempfile
 import pathlib
-import operator
 
 import numpy as np
 import dask.array as da
 from skimage import measure
-import json
+import zipfile
 import geojson
 
-from samples import (CHUNKSIZE, OVERLAPS, THRESHOLD, INPUT_IMG, OUTPUT_LBL,
-                     OVERLAPPED_INPUT, ANNOTATIONS_OUTPUT, FEATRUES_RES,
-                     BLOCK_INFOS, SEGMENTATION_RES, REMOVAL_RES,
-                     LOCAL_SORT_RES, GLOBAL_SORT_RES, GLOBAL_SORT_RES_OVERLAP,
+from samples import (CHUNKSIZE, OVERLAPS, THRESHOLD, INPUT_IMG,
+                     ANNOTATIONS_OUTPUT, SEGMENTATION_RES, REMOVAL_RES,
+                     GLOBAL_SORT_RES, GLOBAL_SORT_RES_OVERLAP,
                      MERGED_OVERLAP_RES, MERGED_OVERLAP_TRIMMED_RES)
 
-from relabel import chunkops, relabeling
-
-
-@pytest.fixture(scope="module", params=[0, 1, 2, 3, 4, 5, 6, 7, 8])
-def input_output_steps_2d(request):
-    block_info = BLOCK_INFOS[request.param]
-    y, x = block_info[None]["chunk-location"]
-
-    out_dir = tempfile.TemporaryDirectory(prefix="./tests")
-
-    expected_values = {
-        "ndim": 2,
-        "block_info": block_info,
-        "input": OVERLAPPED_INPUT[y][x],
-        "segmentation_expected": SEGMENTATION_RES[y][x],
-        "removal_expected": REMOVAL_RES[y][x],
-        "sorted_expected": GLOBAL_SORT_RES[y][x],
-        "global_sorted_overlap_input": GLOBAL_SORT_RES_OVERLAP[y][x],
-        "merged_overlap_expected": MERGED_OVERLAP_RES[y][x],
-        "merged_overlap_trimmed_expected": MERGED_OVERLAP_TRIMMED_RES[y][x],
-        "features_expected": FEATRUES_RES[y][x],
-        "annotations_output": ANNOTATIONS_OUTPUT[y][x],
-        "overlaps": OVERLAPS,
-        "chunksize": CHUNKSIZE,
-        "threshold": THRESHOLD,
-        "out_dir": pathlib.Path(out_dir.name)
-    }
-
-    yield expected_values
-
-    out_dir.cleanup()
+from relabel import relabeling
 
 
 @pytest.fixture
-def input_output_2d(request):
-    out_dir = tempfile.TemporaryDirectory(prefix="./tests")
-
-    input_arr = da.from_array(
-        np.array(INPUT_IMG, dtype=np.uint8),
-        chunks=CHUNKSIZE
-    )
-
-    output_lab = np.array(OUTPUT_LBL, dtype=np.int32)
-    segmentation_expected_arr = da.block(SEGMENTATION_RES)
-    removal_expected_arr = da.block(REMOVAL_RES)
-    global_sort_expected_arr = da.block(GLOBAL_SORT_RES)
-    global_sorted_overlap_input_arr = da.block(GLOBAL_SORT_RES_OVERLAP)
-    merged_overlap_expected_arr = da.block(MERGED_OVERLAP_RES)
-    merged_overlap_trimmed_expected_arr = da.block(MERGED_OVERLAP_TRIMMED_RES)
-    features_expected_arr = da.block(FEATRUES_RES)
-
-    with open( pathlib.Path("./tests") / "test_geojson.json", "w") as fp:
-        json.dump(ANNOTATIONS_OUTPUT[0][0], fp)
+def input_output_2d():
+    out_parent_dir = tempfile.TemporaryDirectory(prefix="./tests")
+    out_dir = pathlib.Path(out_parent_dir.name) / "test_image"
+    persist_dir = pathlib.Path(out_parent_dir.name) / "test_image-temp"
 
     expected_values = {
         "ndim": 2,
-        "input": input_arr,
-        "output": output_lab,
-        "segmentation_expected": segmentation_expected_arr,
-        "removal_expected": removal_expected_arr,
-        "global_sort_expected": global_sort_expected_arr,
-        "global_sorted_overlap_input": global_sorted_overlap_input_arr,
-        "merged_overlap_expected": merged_overlap_expected_arr,
-        "merged_overlap_trimmed_expected": merged_overlap_trimmed_expected_arr,
-        "features_expected": features_expected_arr,
+        "input": INPUT_IMG,
+        "segmentation_expected": SEGMENTATION_RES,
+        "removal_expected": REMOVAL_RES,
+        "global_sort_expected": GLOBAL_SORT_RES,
+        "global_sorted_overlap_input": GLOBAL_SORT_RES_OVERLAP,
+        "merged_overlap_expected": MERGED_OVERLAP_RES,
+        "merged_overlap_trimmed_expected": MERGED_OVERLAP_TRIMMED_RES,
         "annotations_output": ANNOTATIONS_OUTPUT,
         "overlaps": OVERLAPS,
         "chunksize": CHUNKSIZE,
         "threshold": THRESHOLD,
-        "out_dir": pathlib.Path(out_dir.name)
+        "out_dir": out_dir,
+        "persist_dir": persist_dir
     }
 
     yield expected_values
 
-    out_dir.cleanup()
+    out_parent_dir.cleanup()
 
 
 def segmentation_fun(img: np.ndarray, **kwargs):
@@ -121,38 +73,6 @@ def check_coordinate_list(features_coords_output, features_coords_expected):
     return all_match
 
 
-def test_dump_annotation(input_output_steps_2d):
-    block_info = input_output_steps_2d["block_info"]
-    features_input = input_output_steps_2d["features_expected"]
-    annotations_expected = input_output_steps_2d["annotations_output"]
-
-    out_dir = input_output_steps_2d["out_dir"]
-
-    chunkops.dump_annotation(annotated_tile=features_input,
-                             out_dir=out_dir,
-                             block_info=block_info)
-
-    out_filename = (
-        f"detection-"
-        f"{'-'.join(map(str, block_info[None]['chunk-location']))}"
-        f".geojson")
-
-    out_filename = out_dir / out_filename
-
-    if len(annotations_expected):
-        with open(out_filename, "r") as fp:
-            out_geojson_file = geojson.load(fp)
-
-        assert all(map(operator.eq, out_geojson_file, annotations_expected)), \
-            (f"Expected dumped GEOJson to be {annotations_expected}, but got "
-             f"{out_geojson_file} instead.")
-    else:
-        assert not out_filename.exists(), \
-            (f"Expected no GEOJson be generated for the empty block "
-             f"{block_info[None]['chunk-location']}, for "
-             f"{annotations_expected}, got {out_filename}")
-
-
 def test_segment_overlapped_input(input_output_2d):
     ndim = input_output_2d["ndim"]
     overlaps = input_output_2d["overlaps"]
@@ -160,10 +80,15 @@ def test_segment_overlapped_input(input_output_2d):
     input_img = input_output_2d["input"]
     segmentation_expected = input_output_2d["segmentation_expected"]
 
-    local_sort_output = relabeling.segment_overlapped_input(
+    input_img_overlapped = relabeling.prepare_input(
         input_img,
-        seg_fn=segmentation_fun,
         overlaps=overlaps,
+        ndim=ndim
+    )
+
+    local_sort_output = relabeling.segment_overlapped_input(
+        input_img_overlapped,
+        seg_fn=segmentation_fun,
         ndim=ndim,
         persist=False,
         progressbar=False
@@ -236,7 +161,6 @@ def test_merge_overlapped_tiles(input_output_2d):
         labels=labels_arr,
         overlaps=overlaps,
         ndim=ndim,
-        offset_labels=False,
         persist=False,
         progressbar=False
     )
@@ -249,55 +173,69 @@ def test_merge_overlapped_tiles(input_output_2d):
          f" image\n{merged_expected}")
 
 
-def test_merge_features_tiles(input_output_2d):
+def test_annotate_labeled_tiles(input_output_2d):
     ndim = input_output_2d["ndim"]
     overlaps = input_output_2d["overlaps"]
 
-    labels_arr = input_output_2d["global_sort_expected"]
-    features_expected = input_output_2d["features_expected"]
+    labels_input = input_output_2d["removal_expected"]
+    annotations_expected = input_output_2d["annotations_output"]
 
-    features_output = relabeling.merge_features_tiles(
-        labels=labels_arr,
+    annotations_output = relabeling.annotate_labeled_tiles(
+        labels=labels_input,
         overlaps=overlaps,
         object_classes=None,
         ndim=ndim,
-        out_dir=None,
         persist=False,
         progressbar=False
     )
 
-    features_output = features_output.compute()
-    features_expected = features_expected.compute()
+    annotations_expected = annotations_expected.compute()
+    annotations_output = annotations_output.compute()
 
-    check_res = map(
-        check_coordinate_list,
-        features_output.flatten().tolist(),
-        features_expected.flatten().tolist()
-    )
-
-    assert all(check_res), \
-        (f"Labeled output\n{features_output}\ndoes not match the expected"
-         f" merged image\n{features_expected}")
-
-
-def test_dump_features_tiles(input_output_2d):
-    out_dir = input_output_2d["out_dir"]
-    ndim = input_output_2d["ndim"]
-    overlaps = input_output_2d["overlaps"]
-
-    features_input = input_output_2d["features_expected"]
-    annotations_expected = input_output_2d["annotations_output"]
-
-    annotations_output = relabeling.merge_features_tiles(
-        features_input,
-        overlaps=overlaps,
-        object_classes=None,
-        ndim=ndim,
-        out_dir=out_dir,
-        persist=False,
-        progressbar=False)
+    assert np.all(annotations_output == annotations_expected), f"Different at {np.where(annotations_output != annotations_expected)}:\nexpected={annotations_expected[np.where(annotations_output != annotations_expected)]}\ngot={annotations_output[np.where(annotations_output != annotations_expected)]}"
 
     assert np.array_equal(annotations_output, annotations_expected), \
-        (f"Expected geojson features\n{annotations_expected}\n\ndoes not match output features\n{annotations_output}")
+        (f"Expected GEOJson annotations to be\n{annotations_expected}\ngot\n"
+         f"{annotations_output}")
 
-    #TODO: Check if can store GeoJSON using the default JSON codec of Zarr
+
+def test_zip_annotated_labeled_tiles(input_output_2d):
+    annotations_input = input_output_2d["annotations_output"]
+
+    out_dir = input_output_2d["out_dir"]
+
+    out_zip_filename = relabeling.zip_annotated_labeled_tiles(
+        labels=annotations_input,
+        out_dir=out_dir,
+        persist=False,
+        progressbar=False
+    )
+
+    assert str(out_zip_filename).endswith(".zip"), \
+        (f"Output filename should be a .zip file, got {out_zip_filename} "
+         f"instead.")
+
+    assert out_zip_filename.exists(), \
+        (f"Output filename {out_zip_filename} was not generated correctly.")
+
+    annotations_out = np.zeros(annotations_input.shape, dtype=object)
+
+    with zipfile.ZipFile(out_zip_filename) as out_zip:
+        for out_file in out_zip.infolist():
+            pos = map(int, out_file.filename.split(".geojson")[0].split("-"))
+
+            with out_zip.open(out_file.filename, "r") as out_geojson_fp:
+                out_geojson = geojson.load(out_geojson_fp)
+
+            annotations_out[tuple(pos)] = out_geojson
+
+    annotations_input = annotations_input.compute()
+    assert np.array_equal(annotations_out, annotations_input), \
+        (f"Expected dumped GEOJson zip file to be {annotations_input}, but got"
+         f" {annotations_out} instead.")
+
+# TODO: Required tests:
+# 1. Test a segmentation tool that also returns cells type
+# 2. Test with persist as file
+# 3. Test with persist on-the-fly
+# 4. Test with objects with holes

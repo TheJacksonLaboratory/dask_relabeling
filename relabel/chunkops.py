@@ -6,20 +6,9 @@ import scipy
 import geojson
 
 from numpy.typing import ArrayLike
-from typing import List, Union, Callable
+from typing import List, Union
 
 from . import utils
-
-
-def segmentation_wrapper(img_chunk: ArrayLike, segmentation_fn: Callable,
-                         **segmentation_fn_kwargs) -> np.ndarray:
-    """Wrapper to apply a segmentation function to each chunk.
-    """
-    # Execute the segmentation process
-    labeled_image = segmentation_fn(img_chunk, **segmentation_fn_kwargs)
-    labeled_image = labeled_image.astype(np.int32)
-
-    return labeled_image
 
 
 def remove_overlapped_objects(labeled_image: ArrayLike, overlaps: List[int],
@@ -145,15 +134,14 @@ def sort_indices(labeled_image: ArrayLike, ndim: int = 2) -> np.ndarray:
     return labeled_image
 
 
-def merge_tiles(tile: ArrayLike, overlaps: List[int],
-                offset_labels: bool = False,
+def merge_tiles(labeled_image: ArrayLike, overlaps: List[int],
                 block_info: Union[dict, None] = None) -> np.ndarray:
     """Merge objects detected in overlapping regions from adjacent chunks of
     this chunk.
     """
     num_chunks = block_info[None]["num-chunks"]
     chunk_location = block_info[None]["chunk-location"]
-    ndim = tile.ndim
+    ndim = labeled_image.ndim
 
     valid_indices = utils.get_valid_overlaps(chunk_location, num_chunks, ndim)
 
@@ -165,12 +153,7 @@ def merge_tiles(tile: ArrayLike, overlaps: List[int],
             chunk_location, num_chunks, overlaps)
     )
 
-    merging_tile = np.copy(tile[base_src_sel])
-
-    if offset_labels:
-        offset_index = np.max(merging_tile)
-        offsetted_labels = np.where(merging_tile, offset_index + 1, 0)
-        merging_tile = merging_tile - offsetted_labels
+    merging_tile = np.copy(labeled_image[base_src_sel])
 
     left_tile = np.empty_like(merging_tile)
 
@@ -180,7 +163,7 @@ def merge_tiles(tile: ArrayLike, overlaps: List[int],
                             chunk_location, num_chunks, overlaps, indices))
         src_sel = tuple(map(utils.get_source_selection,
                             chunk_location, num_chunks, overlaps, indices))
-        left_tile[dst_sel] = tile[src_sel]
+        left_tile[dst_sel] = labeled_image[src_sel]
 
         for l_label in np.unique(left_tile):
             if l_label == 0:
@@ -188,17 +171,16 @@ def merge_tiles(tile: ArrayLike, overlaps: List[int],
 
             merging_tile = np.where(
                 left_tile == l_label,
-                0 if offset_labels else l_label,
+                l_label,
                 merging_tile
             )
 
-    if not offset_labels:
-        merging_tile = merging_tile[base_src_sel]
+    merging_tile = merging_tile[base_src_sel]
 
     return merging_tile
 
 
-def compute_object_features(merged_tile: ArrayLike, overlaps: List[int],
+def annotate_object_fetures(labeled_image: ArrayLike, overlaps: List[int],
                             object_classes: dict,
                             ndim: int = 2,
                             block_info: Union[dict, None] = None
@@ -221,35 +203,33 @@ def compute_object_features(merged_tile: ArrayLike, overlaps: List[int],
     offset = array_location - offset_overlaps
     offset = offset[[1, 0]]
 
-    detections = utils.labels_to_annotations(
-        merged_tile,
+    annotations = utils.labels_to_annotations(
+        labeled_image,
         object_classes=object_classes,
         offset=offset,
-        ndim=ndim,
-        keep_all=False
+        ndim=ndim
     )
 
-    merged_tile = np.array([[{"detections": detections}]], dtype=object)
+    labeled_image_annotations = np.array([[annotations]], dtype=object)
 
-    return merged_tile
+    return labeled_image_annotations
 
 
-def dump_annotation(annotated_tile: ArrayLike, out_dir: pathlib.Path,
-                    block_info: Union[dict, None] = None
-                    ) -> np.ndarray:
-    annotations = []
-    for object_type, cc in annotated_tile[0, 0]["detections"]:
-        cc_poly = geojson.Polygon([cc])
+def dump_annotaions(labeled_image_annotations: ArrayLike,
+                    out_dir: pathlib.Path,
+                    block_info: Union[dict, None] = None) -> np.ndarray:
 
-        annotations.append(geojson.Feature(geometry=cc_poly))
-        annotations[-1]["properties"] = {"objectType": object_type}
+    geojson_annotation = labeled_image_annotations.item()
 
-    if len(annotations):
-        filename = (f"detection-"
-                    f"{'-'.join(map(str, block_info[None]['chunk-location']))}"
-                    f".geojson")
-        filename = out_dir / filename
-        with open(filename, "w") as fp:
-            geojson.dump(annotations, fp)
+    if geojson_annotation:
+        out_filename = "-".join(map(str, block_info[None]['chunk-location']))
+        out_filename += ".geojson"
+        out_filename = out_dir / out_filename
 
-    return np.array([[None]], dtype=object)
+        with open(out_filename, "w") as fp:
+            geojson.dump(geojson_annotation, fp)
+
+    else:
+        out_filename = 0
+
+    return np.array([[out_filename]], dtype=object)

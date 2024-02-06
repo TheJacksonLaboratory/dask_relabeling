@@ -7,7 +7,6 @@ import cv2
 import geojson
 
 import dask.array as da
-
 from numcodecs.abc import Codec
 
 from typing import List, Tuple, Union
@@ -122,7 +121,8 @@ def save_intermediate_array(array: da.Array,
         out_dir / filename,
         compressor=compressor,
         object_codec=object_codec,
-        overwrite=True
+        overwrite=True,
+        write_empty_chunks=False
     )
 
     return padding
@@ -142,10 +142,7 @@ def load_intermediate_array(filename: Union[pathlib.Path, str],
 
 def labels_to_annotations(labels: np.ndarray, object_classes: dict,
                           offset: Union[np.ndarray, None] = None,
-                          ndim: int = 2,
-                          keep_all: bool = False
-                          ) -> Union[List[geojson.Feature], pathlib.Path,
-                                     None]:
+                          ndim: int = 2) -> geojson.Feature:
     if labels.ndim > ndim:
         labels = labels[0]
         classes = labels[1]
@@ -162,18 +159,14 @@ def labels_to_annotations(labels: np.ndarray, object_classes: dict,
         curr_class = np.max(classes[np.nonzero(mask)])
         object_type = object_classes[curr_class]
 
-        (contour_coords,
-         hierarchy) = cv2.findContours(mask.astype(np.uint8),
-                                       mode=cv2.RETR_TREE,
-                                       method=cv2.CHAIN_APPROX_NONE)
+        contour_coords, _ = cv2.findContours(mask.astype(np.uint8),
+                                             mode=cv2.RETR_TREE,
+                                             method=cv2.CHAIN_APPROX_NONE)
 
-        if keep_all:
-            contours_indices = np.nonzero(hierarchy[0, :, -1] == -1)[0]
-        else:
-            contours_indices = [max(map(lambda i, cc:
-                                        (len(cc), i),
-                                        range(len(contour_coords)),
-                                        contour_coords))[1]]
+        contours_indices = [max(map(lambda i, cc:
+                                    (len(cc), i),
+                                    range(len(contour_coords)),
+                                    contour_coords))[1]]
 
         for p_idx in contours_indices:
             cc = contour_coords[p_idx].squeeze(1)
@@ -184,7 +177,15 @@ def labels_to_annotations(labels: np.ndarray, object_classes: dict,
                 cc += offset[None, :]
 
             cc = np.vstack((cc, cc[0, None, :]))
+            cc_poly = geojson.Polygon([cc.tolist()])
 
-            annotations.append([object_type, cc.tolist()])
+            annotations.append(geojson.Feature(geometry=cc_poly))
+            annotations[-1]["properties"] = {"objectType": object_type}
+
+    if not len(annotations):
+        annotations = 0
+
+    else:
+        annotations = geojson.FeatureCollection(annotations)
 
     return annotations

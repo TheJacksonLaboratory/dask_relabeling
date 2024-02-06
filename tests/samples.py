@@ -1,4 +1,5 @@
 import numpy as np
+import dask.array as da
 
 
 CHUNKSIZE = [4, 4]
@@ -7,7 +8,7 @@ OVERLAPS = [1, 1]
 
 THRESHOLD = 0.25
 
-INPUT_IMG = np.array([
+INPUT_IMG = da.from_array(np.array([
     [0, 0, 255, 255, 0, 255, 255, 0, 255, 255, 0, 0],
     [0, 0, 255, 255, 0, 255, 255, 0, 255, 255, 0, 0],
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255],
@@ -20,290 +21,220 @@ INPUT_IMG = np.array([
     [255, 255, 0, 255, 255, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 0, 0, 255, 255, 0, 255, 255],
     [0, 0, 0, 0, 0, 0, 0, 255, 255, 0, 255, 255]
-], dtype=np.uint8)
+], dtype=np.uint8), chunks=CHUNKSIZE)
 
-OUTPUT_LBL = np.array([
-    [0, 0, 1, 1, 0, 3, 3, 0, 5, 5, 0, 0],
-    [0, 0, 1, 1, 0, 3, 3, 0, 5, 5, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6],
-    [0, 0, 2, 2, 0, 4, 4, 0, 7, 7, 0, 6],
-    [0, 0, 2, 2, 0, 4, 4, 0, 7, 7, 0, 0],
-    [8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [8, 8, 0, 0, 0, 0, 0, 0, 0, 0, 9, 9],
-    [0, 0, 0, 0, 0, 0, 0, 12, 12, 0, 9, 9],
-    [10, 10, 0, 11, 11, 0, 0, 12, 12, 0, 0, 0],
-    [10, 10, 0, 11, 11, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 13, 13, 0, 14, 14],
-    [0, 0, 0, 0, 0, 0, 0, 13, 13, 0, 14, 14]
-], dtype=np.int32)
-
-ANNOTATIONS_OUTPUT = [
+ANNOTATIONS_OUTPUT = da.block([
     [
-        [
-            {
-                "geometry": {
-                    "coordinates": [[[2, 0], [2, 1], [3, 1], [3, 0], [2, 0]]],
-                    "type": "Polygon"
+        np.array([[{
+            "features": [
+                {
+                    "geometry": {
+                        "coordinates": [
+                            [[2, 0], [2, 1], [3, 1], [3, 0], [2, 0]]
+                        ],
+                        "type": "Polygon"
+                    },
+                    "properties": {
+                        "objectType": "cell"
+                    },
+                    "type": "Feature"
                 },
-                "properties": {
-                    "objectType": "cell"
+                {
+                    "geometry": {
+                        "coordinates": [
+                            [[2, 3], [2, 4], [3, 4], [3, 3], [2, 3]]
+                        ],
+                        "type": "Polygon"
+                    },
+                    "properties": {
+                        "objectType": "cell"
+                    },
+                    "type": "Feature"
                 },
-                "type": "Feature"
-            },
-            {
-                "geometry": {
-                    "coordinates": [[[2, 3], [2, 4], [3, 4], [3, 3], [2, 3]]],
-                    "type": "Polygon"
+            ],
+            "type": "FeatureCollection"
+        }]], dtype=object),
+        np.array([[{
+            "features": [
+                {
+                    "geometry": {
+                        "coordinates": [
+                            [[5, 0], [5, 1], [6, 1], [6, 0], [5, 0]]
+                        ],
+                        "type": "Polygon"
+                    },
+                    "properties": {
+                        "objectType": "cell"
+                    },
+                    "type": "Feature"},
+                {
+                    "geometry": {
+                        "coordinates": [
+                            [[5, 3], [5, 4], [6, 4], [6, 3], [5, 3]]
+                        ],
+                        "type": "Polygon"
+                    },
+                    "properties": {
+                        "objectType": "cell"
+                    },
+                    "type": "Feature"
                 },
-                "properties": {
-                    "objectType": "cell"
+            ],
+            "type": "FeatureCollection"
+        }]], dtype=object),
+        np.array([[{
+            "features": [
+                {
+                    "geometry": {
+                        "coordinates": [
+                            [[8, 0], [8, 1], [9, 1], [9, 0], [8, 0]]
+                        ],
+                        "type": "Polygon"
+                    },
+                    "properties": {
+                        "objectType": "cell"
+                    },
+                    "type": "Feature"
                 },
-                "type": "Feature"
-            },
-        ],
-        [
-            {
-                "geometry": {
-                    "coordinates": [[[5, 0], [5, 1], [6, 1], [6, 0], [5, 0]]],
-                    "type": "Polygon"
+                {
+                    "geometry": {
+                        "coordinates": [
+                            [[11, 2], [11, 3], [11, 2]]
+                        ],
+                        "type": "Polygon"
+                    },
+                    "properties": {
+                        "objectType": "cell"
+                    },
+                    "type": "Feature"
                 },
-                "properties": {
-                    "objectType": "cell"
+                {
+                    "geometry": {
+                        "coordinates": [
+                            [[8, 3], [8, 4], [9, 4], [9, 3], [8, 3]]
+                        ],
+                        "type": "Polygon"
+                    },
+                    "properties": {
+                        "objectType": "cell"
+                    },
+                    "type": "Feature"
                 },
-                "type": "Feature"},
-            {
-                "geometry": {
-                    "coordinates": [[[5, 3], [5, 4], [6, 4], [6, 3], [5, 3]]],
-                    "type": "Polygon"
-                },
-                "properties": {
-                    "objectType": "cell"
-                },
-                "type": "Feature"
-            },
-        ],
-        [
-            {
-                "geometry": {
-                    "coordinates": [[[11, 2], [11, 3], [11, 2]]],
-                    "type": "Polygon"
-                },
-                "properties": {
-                    "objectType": "cell"
-                },
-                "type": "Feature"
-            },
-            {
-                "geometry": {
-                    "coordinates": [[[8, 3], [8, 4], [9, 4], [9, 3], [8, 3]]],
-                    "type": "Polygon"
-                },
-                "properties": {
-                    "objectType": "cell"
-                },
-                "type": "Feature"
-            },
-            {
-                "geometry": {
-                    "coordinates": [[[8, 0], [8, 1], [9, 1], [9, 0], [8, 0]]],
-                    "type": "Polygon"
-                },
-                "properties": {
-                    "objectType": "cell"
-                },
-                "type": "Feature"
-            },
-        ],
+            ],
+            "type": "FeatureCollection"
+        }]], dtype=object)
     ],
     [
-        [
-            {
-                "geometry": {
-                    "coordinates": [[[0, 5], [0, 6], [1, 6], [0, 5]]],
-                    "type": "Polygon"
+        np.array([[{
+            "features": [
+                {
+                    "geometry": {
+                        "coordinates": [
+                            [[0, 5], [0, 6], [1, 6], [0, 5]]
+                        ],
+                        "type": "Polygon"
+                    },
+                    "properties": {
+                        "objectType": "cell"
+                    },
+                    "type": "Feature"
                 },
-                "properties": {
-                    "objectType": "cell"
-                },
-                "type": "Feature"
-            },
-        ],
-        [],
-        [
-            {
-                "geometry": {
-                    "coordinates": [[
-                        [10, 6], [10, 7], [11, 7], [11, 6], [10, 6]
-                        ]],
-                    "type": "Polygon"
-                },
-                "properties": {
-                    "objectType": "cell"
-                },
-                "type": "Feature"
-            }
-        ],
+            ],
+            "type": "FeatureCollection"
+        }]], dtype=object),
+        np.array([[0]], dtype=object),
+        np.array([[{
+            "features": [
+                {
+                    "geometry": {
+                        "coordinates": [
+                            [[10, 6], [10, 7], [11, 7], [11, 6], [10, 6]]
+                        ],
+                        "type": "Polygon"
+                    },
+                    "properties": {
+                        "objectType": "cell"
+                    },
+                    "type": "Feature"
+                }
+            ],
+            "type": "FeatureCollection"
+        }]], dtype=object)
     ],
     [
-        [
-            {
-                "geometry": {
-                    "coordinates": [[[0, 8], [0, 9], [1, 9], [1, 8], [0, 8]]],
-                    "type": "Polygon"
+        np.array([[{
+            "features": [
+                {
+                    "geometry": {
+                        "coordinates": [
+                            [[0, 8], [0, 9], [1, 9], [1, 8], [0, 8]]
+                        ],
+                        "type": "Polygon"
+                    },
+                    "properties": {
+                        "objectType": "cell"
+                    },
+                    "type": "Feature"
                 },
-                "properties": {
-                    "objectType": "cell"
+                {
+                    "geometry": {
+                        "coordinates": [
+                            [[3, 8], [3, 9], [4, 9], [4, 8], [3, 8]]
+                        ],
+                        "type": "Polygon"
+                    },
+                    "properties": {
+                        "objectType": "cell"
+                    },
+                    "type": "Feature"
                 },
-                "type": "Feature"
-            },
-            {
-                "geometry": {
-                    "coordinates": [[[3, 8], [3, 9], [4, 9], [4, 8], [3, 8]]],
-                    "type": "Polygon"
+            ],
+            "type": "FeatureCollection"
+        }]], dtype=object),
+        np.array([[0]], dtype=object),
+        np.array([[{
+            "features": [
+                {
+                    "geometry": {
+                        "coordinates": [
+                            [[7, 7], [7, 8], [8, 8], [8, 7], [7, 7]]
+                        ],
+                        "type": "Polygon"
+                    },
+                    "properties": {
+                        "objectType": "cell"
+                    },
+                    "type": "Feature"
                 },
-                "properties": {
-                    "objectType": "cell"
+                {
+                    "geometry": {
+                        "coordinates": [
+                            [[7, 10], [7, 11], [8, 11], [8, 10], [7, 10]]
+                        ],
+                        "type": "Polygon"
+                    },
+                    "properties": {
+                        "objectType": "cell"
+                    },
+                    "type": "Feature"
                 },
-                "type": "Feature"
-            },
-        ],
-        [],
-        [
-            {
-                "geometry": {
-                    "coordinates": [[[7, 7], [7, 8], [8, 8], [8, 7], [7, 7]]],
-                    "type": "Polygon"
-                },
-                "properties": {
-                    "objectType": "cell"
-                },
-                "type": "Feature"
-            },
-            {
-                "geometry": {
-                    "coordinates": [[
-                        [7, 10], [7, 11], [8, 11], [8, 10], [7, 10]
-                        ]],
-                    "type": "Polygon"
-                },
-                "properties": {
-                    "objectType": "cell"
-                },
-                "type": "Feature"
-            },
-            {
-                "geometry": {
-                    "coordinates": [[
-                        [10, 10], [10, 11], [11, 11], [11, 10], [10, 10]
-                        ]],
-                    "type": "Polygon"
-                },
-                "properties": {
-                    "objectType": "cell"
-                },
-                "type": "Feature"
-            }
-        ]
+                {
+                    "geometry": {
+                        "coordinates": [
+                            [[10, 10], [10, 11], [11, 11], [11, 10], [10, 10]]
+                        ],
+                        "type": "Polygon"
+                    },
+                    "properties": {
+                        "objectType": "cell"
+                    },
+                    "type": "Feature"
+                }
+            ],
+            "type": "FeatureCollection"
+        }]], dtype=object)
     ]
-]
-
-FEATRUES_RES = [
-    [
-        np.array([
-            [
-                {
-                    "detections": [
-                        ["cell", [[2, 0], [2, 1], [3, 1], [3, 0], [2, 0]]],
-                        ["cell", [[2, 3], [2, 4], [3, 4], [3, 3], [2, 3]]]
-                    ]
-                }
-            ]
-        ], dtype=object),
-        np.array([
-            [
-                {
-                    "detections": [
-                        ["cell", [[5, 0], [5, 1], [6, 1], [6, 0], [5, 0]]],
-                        ["cell", [[5, 3], [5, 4], [6, 4], [6, 3], [5, 3]]]
-                    ]
-                }
-            ]
-        ], dtype=object),
-        np.array([
-            [
-                {
-                    "detections": [
-                        ["cell", [[11, 2], [11, 3], [11, 2]]],
-                        ["cell", [[8, 3], [8, 4], [9, 4], [9, 3], [8, 3]]],
-                        ["cell", [[8, 0], [8, 1], [9, 1], [9, 0], [8, 0]]]
-                    ]
-                }
-            ]
-        ], dtype=object),
-    ],
-    [
-        np.array([
-            [
-                {
-                    "detections": [
-                        ["cell", [[0, 5], [0, 6], [1, 6], [0, 5]]]
-                    ]
-                }
-            ]
-        ], dtype=object),
-        np.array([
-            [
-                {
-                    "detections": []
-                }
-            ]
-        ], dtype=object),
-        np.array([
-            [
-                {
-                    "detections": [
-                        ["cell", [[10, 6], [10, 7], [11, 7], [11, 6], [10, 6]]]
-                    ]
-                }
-            ]
-        ], dtype=object),
-    ],
-    [
-        np.array([
-            [
-                {
-                    "detections": [
-                        ["cell", [[0, 8], [0, 9], [1, 9], [1, 8], [0, 8]]],
-                        ["cell", [[3, 8], [3, 9], [4, 9], [4, 8], [3, 8]]]
-                    ]
-                }
-            ]
-        ], dtype=object),
-        np.array([
-            [
-                {
-                    "detections": []
-                 }
-            ]
-        ], dtype=object),
-        np.array([
-            [
-                {
-                    "detections": [
-                        ["cell", [[7, 7], [7, 8], [8, 8], [8, 7], [7, 7]]],
-                        ["cell", [[7, 10], [7, 11], [8, 11], [8, 10], [7, 10]]
-                         ],
-                        ["cell", [
-                                [10, 10], [10, 11], [11, 11], [11, 10],
-                                [10, 10]
-                            ]
-                         ]
-                    ]
-                }
-            ]
-        ], dtype=object)
-    ]
-]
+])
 
 BLOCK_INFOS = [
     {0: {"array-location": [(0, 4), (0, 4)]},
@@ -326,7 +257,7 @@ BLOCK_INFOS = [
      None: {"chunk-location": (2, 2), "num-chunks": (3, 3)}},
 ]
 
-OVERLAPPED_INPUT = [
+OVERLAPPED_INPUT = da.block([
     [
         np.array([
             [0, 0, 255, 255, 0],
@@ -399,9 +330,9 @@ OVERLAPPED_INPUT = [
             [255, 255, 0, 255, 255]
         ], dtype=np.int32)
     ]
-]
+])
 
-SEGMENTATION_RES = [
+SEGMENTATION_RES = da.block([
     [
         np.array([
             [0, 0, 1, 1, 0],
@@ -474,10 +405,10 @@ SEGMENTATION_RES = [
             [3, 3, 0, 4, 4]
         ], dtype=np.int32),
     ]
-]
+])
 
 
-REMOVAL_RES = [
+REMOVAL_RES = da.block([
     [
         np.array([
             [0, 0, 1, 1, 0],
@@ -550,10 +481,10 @@ REMOVAL_RES = [
             [3, 3, 0, 4, 4]
         ], dtype=np.int32),
     ]
-]
+])
 
 
-LOCAL_SORT_RES = [
+LOCAL_SORT_RES = da.block([
     [
         np.array([
             [0, 0, 1, 1, 0],
@@ -626,10 +557,10 @@ LOCAL_SORT_RES = [
             [2, 2, 0, 3, 3]
         ], dtype=np.int32),
     ]
-]
+])
 
 
-GLOBAL_SORT_RES = [
+GLOBAL_SORT_RES = da.block([
     [
         np.array([
             [0, 0, 1, 1, 0],
@@ -702,10 +633,10 @@ GLOBAL_SORT_RES = [
             [13, 13, 0, 14, 14]
         ], dtype=np.int32),
     ]
-]
+])
 
 
-GLOBAL_SORT_RES_OVERLAP = [
+GLOBAL_SORT_RES_OVERLAP = da.block([
     [
         np.array([
             [0, 0, 1, 1, 0, 0],
@@ -790,10 +721,10 @@ GLOBAL_SORT_RES_OVERLAP = [
             [0, 13, 13, 0, 14, 14]
         ], dtype=np.int32),
     ]
-]
+])
 
 
-MERGED_OVERLAP_RES = [
+MERGED_OVERLAP_RES = da.block([
     [
         np.array([
             [0, 0, 1, 1, 0, 0],
@@ -878,10 +809,10 @@ MERGED_OVERLAP_RES = [
             [0, 13, 13, 0, 14, 14]
         ], dtype=np.int32),
     ]
-]
+])
 
 
-MERGED_OVERLAP_TRIMMED_RES = [
+MERGED_OVERLAP_TRIMMED_RES = da.block([
     [
         np.array([
             [0, 0, 1, 1],
@@ -942,44 +873,11 @@ MERGED_OVERLAP_TRIMMED_RES = [
             [13, 0, 14, 14]
         ], dtype=np.int32),
     ]
-]
+])
 
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-    import numpy as np
-    import cv2
-    import geojson
 
-    input_img = np.array(INPUT_IMG, dtype=np.uint8)
-
-    plt.subplot(1, 2, 1)
-    plt.imshow(input_img)
-
-    output_lbl = np.array(OUTPUT_LBL, dtype=np.int32)
-    plt.subplot(1, 2, 2)
-    plt.imshow(input_img)
-
-    annotations = []
-    for label in np.unique(output_lbl):
-        if label == 0:
-            continue
-
-        mask = output_lbl == label
-        (contour_coords,
-         hierarchy) = cv2.findContours(mask.astype(np.uint8),
-                                       mode=cv2.RETR_TREE,
-                                       method=cv2.CHAIN_APPROX_NONE)
-
-        cc = contour_coords[0][:, 0, :]
-        cc_poly = geojson.Polygon([cc.tolist()])
-        annotations.append(geojson.Feature(geometry=cc_poly))
-        annotations[-1]["properties"] = {"objectType": "cell"}
-
-        cc = np.concatenate((cc, cc[:1]), axis=0)
-        plt.plot(cc[:, 0], cc[:, 1])
-
+    plt.imshow(INPUT_IMG)
     plt.show()
-
-    for ann in annotations:
-        print(ann)
