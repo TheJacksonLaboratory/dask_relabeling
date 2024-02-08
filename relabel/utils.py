@@ -82,9 +82,6 @@ def save_intermediate_array(array: da.Array,
     if not os.path.isdir(out_dir):
         os.makedirs(out_dir, exist_ok=True)
 
-    if ".zarr" not in filename:
-        filename += ".zarr"
-
     chunksize = tuple(
         max(cs_axis)
         for cs_axis in array.chunks
@@ -141,22 +138,20 @@ def load_intermediate_array(filename: Union[pathlib.Path, str],
 
 
 def labels_to_annotations(labels: np.ndarray, object_classes: dict,
-                          offset: Union[np.ndarray, None] = None,
-                          ndim: int = 2) -> geojson.Feature:
-    if labels.ndim > ndim:
-        labels = labels[0]
-        classes = labels[1]
-
-    else:
-        classes = np.zeros_like(labels)
-
+                          classes: Union[np.ndarray, None] = None,
+                          offset: Union[np.ndarray, None] = None
+                          ) -> geojson.Feature:
     annotations = []
     for curr_l in np.unique(labels):
         if curr_l == 0:
             continue
 
         mask = labels == curr_l
-        curr_class = np.max(classes[np.nonzero(mask)])
+        if classes is not None:
+            curr_class = np.max(classes * mask[None, ...])
+        else:
+            curr_class = 0
+
         object_type = object_classes[curr_class]
 
         contour_coords, _ = cv2.findContours(mask.astype(np.uint8),

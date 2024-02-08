@@ -1,27 +1,24 @@
 import os
 import shutil
+import datetime
 import pathlib
 import zipfile
 
 import numpy as np
 import dask.array as da
-from dask.callbacks import Callback
-from dask.diagnostics import ProgressBar
-from numcodecs import JSON, Blosc
+from numcodecs import Blosc
 
 from typing import List, Union, Callable
 
 from . import utils
 from . import chunkops
 
-# TODO: Remove progressbar utility
 
 def segment_overlapped_input(img: da.Array, seg_fn: Callable,
                              ndim: int = 2,
                              returns_classes: bool = False,
                              segmentation_fn_kwargs: Union[dict, None] = None,
-                             persist: Union[bool, pathlib.Path] = False,
-                             progressbar: bool = False) -> da.Array:
+                             ) -> da.Array:
 
     if segmentation_fn_kwargs is None:
         segmentation_fn_kwargs = {}
@@ -43,36 +40,19 @@ def segment_overlapped_input(img: da.Array, seg_fn: Callable,
         meta=np.empty((0, 0), dtype=np.int32)
     )
 
-    if progressbar:
-        progressbar_callback = ProgressBar
-    else:
-        progressbar_callback = Callback
-
-    with progressbar_callback():
-        if isinstance(persist, pathlib.Path):
-            padding = utils.save_intermediate_array(
-                labeled,
-                filename="temp_labeled.zarr",
-                out_dir=persist,
-                compressor=Blosc(clevel=5)
-            )
-
-            labeled = utils.load_intermediate_array(
-                filename=persist / "temp_labeled.zarr",
-                padding=padding
-            )
-
-        elif persist:
-            labeled = labeled.persist()
-
     return labeled
 
 
 def remove_overlapped_labels(labels: da.Array, overlaps: List[int],
                              threshold: float = 0.05,
                              ndim: int = 2,
-                             persist: Union[bool, pathlib.Path] = False,
-                             progressbar: bool = False) -> da.Array:
+                             ) -> da.Array:
+    classes = None
+    if labels.ndim > ndim:
+        labels_chunks = labels.chunks
+
+        classes = labels[1:]
+        labels = labels[0]
 
     removed = da.map_blocks(
         chunkops.remove_overlapped_objects,
@@ -84,38 +64,24 @@ def remove_overlapped_labels(labels: da.Array, overlaps: List[int],
         meta=np.empty((0, ), dtype=np.int32)
     )
 
-    if progressbar:
-        progressbar_callback = ProgressBar
-    else:
-        progressbar_callback = Callback
+    if classes is not None:
+        classes = da.where(removed, classes, 0)
 
-    with progressbar_callback():
-        if isinstance(persist, pathlib.Path):
-            padding = utils.save_intermediate_array(
-                removed,
-                filename="temp_removed.zarr",
-                out_dir=persist,
-                compressor=Blosc(clevel=5)
-            )
-
-            removed = utils.load_intermediate_array(
-                filename=persist / "temp_removed.zarr",
-                padding=padding
-            )
-
-            if os.path.isdir(persist / "temp_labeled.zarr"):
-                shutil.rmtree(persist / "temp_labeled.zarr")
-
-        elif persist:
-            removed = removed.persist()
+        removed = da.concatenate((removed[None, ...], classes), axis=0)
+        removed = removed.rechunk(labels_chunks)
 
     return removed
 
 
-def sort_overlapped_labels(labels: da.Array, ndim: int = 2,
-                           persist: Union[bool, pathlib.Path] = False,
-                           progressbar: bool = False) -> da.Array:
-    sorted = da.map_blocks(
+def sort_overlapped_labels(labels: da.Array, ndim: int = 2) -> da.Array:
+    classes = None
+    if labels.ndim > ndim:
+        labels_chunks = labels.chunks
+
+        classes = labels[1:]
+        labels = labels[0]
+
+    sorted_labels = da.map_blocks(
         chunkops.sort_indices,
         labels,
         ndim=ndim,
@@ -126,112 +92,57 @@ def sort_overlapped_labels(labels: da.Array, ndim: int = 2,
     # Relabel each chunk to have globally unique label indices.
     total = 0
 
-    sorted_globally = da.zeros_like(sorted)
+    sorted_globally = da.zeros_like(sorted_labels)
 
-    indices = da.core.slices_from_chunks(sorted.chunks)
+    for idx in da.core.slices_from_chunks(sorted_labels.chunks):
+        n = da.max(sorted_labels[idx])
 
-    for idx in indices:
-        n = da.max(sorted[idx])
-
-        label_offset = da.where(sorted[idx] > 0, total, 0)
-        sorted_globally[idx] = sorted[idx] + label_offset
+        label_offset = da.where(sorted_labels[idx] > 0, total, 0)
+        sorted_globally[idx] = sorted_labels[idx] + label_offset
 
         total += n
 
-    if progressbar:
-        progressbar_callback = ProgressBar
-    else:
-        progressbar_callback = Callback
-
-    with progressbar_callback():
-        if isinstance(persist, pathlib.Path):
-            padding = utils.save_intermediate_array(
-                sorted_globally,
-                filename="temp_sorted.zarr",
-                out_dir=persist,
-                compressor=Blosc(clevel=5)
-            )
-
-            sorted_globally = utils.load_intermediate_array(
-                filename=persist / "temp_sorted.zarr",
-                padding=padding
-            )
-
-            if os.path.isdir(persist / "temp_removed.zarr"):
-                shutil.rmtree(persist / "temp_removed.zarr")
-
-        elif persist:
-            sorted_globally = sorted_globally.persist()
+    if classes is not None:
+        sorted_globally = da.concatenate(
+            (sorted_globally[None, ...], classes),
+            axis=0
+        )
+        sorted_globally = sorted_globally.rechunk(labels_chunks)
 
     return sorted_globally
 
 
 def merge_overlapped_tiles(labels: da.Array, overlaps: List[int],
-                           ndim: int = 2,
-                           persist: Union[bool, pathlib.Path] = False,
-                           progressbar: bool = False) -> da.Array:
-
-    merged_chunks = tuple(
-        list(labels.chunks[:(labels.ndim - ndim)])
-        + [tuple(cs
-                 - (overlap if location > 0 else 0)
-                 - (overlap if location < len(cs_axis) - 1 else 0)
-                 for location, cs in enumerate(cs_axis)
-                 )
-           for overlap, cs_axis in zip(overlaps, labels.chunks[-ndim:])
-           ]
-    )
-
+                           ndim: int = 2) -> da.Array:
     merged_depth = tuple([0] * (labels.ndim - ndim)
                          + [(overlap, overlap) for overlap in overlaps])
 
+    if labels.ndim > ndim:
+        merge_func = chunkops.merge_tiles_and_classes
+    else:
+        merge_func = chunkops.merge_tiles
+
     # Merge the overlapped objects from adjacent chunks for all chunk tiles.
     merged = da.map_overlap(
-        chunkops.merge_tiles,
+        merge_func,
         labels,
         overlaps=overlaps,
+        ndim=ndim,
         depth=merged_depth,
         boundary=None,
         trim=False,
-        chunks=merged_chunks,
         dtype=np.int32,
         meta=np.empty((0, 0), dtype=np.int32)
     )
 
-    if progressbar:
-        progressbar_callback = ProgressBar
-    else:
-        progressbar_callback = Callback
-
-    with progressbar_callback():
-        if isinstance(persist, pathlib.Path):
-            padding = utils.save_intermediate_array(
-                merged,
-                filename="temp_merged.zarr",
-                out_dir=persist,
-                compressor=Blosc(clevel=5)
-            )
-
-            merged = utils.load_intermediate_array(
-                filename=persist / "temp_merged.zarr",
-                padding=padding
-            )
-
-            if os.path.isdir(persist / "temp_sorted.zarr"):
-                shutil.rmtree(persist / "temp_sorted.zarr")
-
-        elif persist:
-            merged = merged.persist()
+    merged = da.overlap.trim_overlap(merged, merged_depth, boundary=None)
 
     return merged
 
 
 def annotate_labeled_tiles(labels: da.Array, overlaps: List[int],
                            object_classes: Union[dict, None] = None,
-                           ndim: int = 2,
-                           persist: Union[bool, pathlib.Path] = False,
-                           progressbar: bool = False
-                           ) -> Union[da.Array, pathlib.Path]:
+                           ndim: int = 2) -> Union[da.Array, pathlib.Path]:
     if object_classes is None:
         object_classes = {
             0: "cell"
@@ -243,45 +154,29 @@ def annotate_labeled_tiles(labels: da.Array, overlaps: List[int],
         overlaps=overlaps,
         object_classes=object_classes,
         ndim=ndim,
+        drop_axis=tuple(range(labels.ndim - ndim)),
         chunks=(1, 1),
         dtype=object,
         meta=np.empty((0, 0), dtype=object)
     )
 
-    if progressbar:
-        progressbar_callback = ProgressBar
-    else:
-        progressbar_callback = Callback
-
-    with progressbar_callback():
-        if isinstance(persist, pathlib.Path):
-            padding = utils.save_intermediate_array(
-                labels_annotations,
-                filename="temp_annotations.zarr",
-                out_dir=persist,
-                object_codec=JSON()
-            )
-
-            labels_annotations = utils.load_intermediate_array(
-                filename=persist / "temp_annotations.zarr",
-                padding=padding
-            )
-
-            if os.path.isdir(persist / "temp_removed.zarr"):
-                shutil.rmtree(persist / "temp_removed.zarr")
-
-        elif persist:
-            labels_annotations = labels_annotations.persist()
-
     return labels_annotations
 
 
-def zip_annotated_labeled_tiles(labels: da.Array, out_dir: pathlib.Path,
-                                persist: Union[bool, pathlib.Path] = False,
-                                progressbar: bool = False) -> pathlib.Path:
+def zip_annotated_labeled_tiles(labels: da.Array,
+                                out_dir: Union[str, pathlib.Path, None] = None
+                                ) -> pathlib.Path:
+    if out_dir is None:
+        out_dir = "./annotations_output-"
+        out_dir + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
+    if isinstance(out_dir, str):
+        out_dir = pathlib.Path(out_dir)
+
+    safe_to_remove = False
     if not os.path.isdir(out_dir):
         os.makedirs(out_dir, exist_ok=True)
+        safe_to_remove = True
 
     geojson_filenames = da.map_blocks(
         chunkops.dump_annotaions,
@@ -292,13 +187,7 @@ def zip_annotated_labeled_tiles(labels: da.Array, out_dir: pathlib.Path,
         meta=np.empty((0, 0), dtype=object)
     )
 
-    if progressbar:
-        progressbar_callback = ProgressBar
-    else:
-        progressbar_callback = Callback
-
-    with progressbar_callback():
-        geojson_filenames = geojson_filenames.compute()
+    geojson_filenames = geojson_filenames.compute()
 
     out_zip_filename = pathlib.Path(str(out_dir) + ".zip")
     with zipfile.ZipFile(out_zip_filename, "w", zipfile.ZIP_DEFLATED,
@@ -308,12 +197,8 @@ def zip_annotated_labeled_tiles(labels: da.Array, out_dir: pathlib.Path,
                 out_zip.write(chunk_filename,
                               arcname=chunk_filename.relative_to(out_dir))
 
-    if os.path.isdir(out_dir):
+    if safe_to_remove and os.path.isdir(out_dir):
         shutil.rmtree(out_dir)
-
-    if isinstance(persist, pathlib.Path):
-        if os.path.isdir(persist / "temp_annotations.zarr"):
-            shutil.rmtree(persist / "temp_annotations.zarr")
 
     return out_zip_filename
 
@@ -350,15 +235,15 @@ def image2labels(img: da.Array, seg_fn: Callable,
                  overlaps: Union[int, List[int]] = 50,
                  threshold: float = 0.05,
                  ndim: int = 2,
-                 persist: Union[bool, pathlib.Path, str] = False,
-                 progressbar: bool = False,
+                 returns_classes: bool = False,
+                 temp_dir: Union[str, pathlib.Path, None] = None,
                  segmentation_fn_kwargs: Union[dict, None] = None) -> da.Array:
 
     if isinstance(overlaps, int):
         overlaps = [overlaps] * ndim
 
-    if isinstance(persist, str):
-        persist = pathlib.Path(persist)
+    if isinstance(temp_dir, str):
+        temp_dir = pathlib.Path(temp_dir)
 
     img_overlapped = prepare_input(img, overlaps=overlaps, ndim=ndim)
 
@@ -366,33 +251,36 @@ def image2labels(img: da.Array, seg_fn: Callable,
         img_overlapped,
         seg_fn=seg_fn,
         ndim=ndim,
-        segmentation_fn_kwargs=segmentation_fn_kwargs,
-        persist=persist,
-        progressbar=progressbar
+        returns_classes=returns_classes,
+        segmentation_fn_kwargs=segmentation_fn_kwargs
     )
 
     labels = remove_overlapped_labels(
         labels,
         overlaps=overlaps,
         threshold=threshold,
-        ndim=ndim,
-        persist=persist,
-        progressbar=progressbar
+        ndim=ndim
     )
 
-    labels = sort_overlapped_labels(
-        labels,
-        ndim=ndim,
-        persist=persist,
-        progressbar=progressbar
-    )
+    if temp_dir is not None:
+        padding = utils.save_intermediate_array(
+            labels,
+            filename="temp_removed.zarr",
+            out_dir=temp_dir,
+            compressor=Blosc(clevel=5)
+        )
+
+        labels = utils.load_intermediate_array(
+            filename=temp_dir / "temp_removed.zarr",
+            padding=padding
+        )
+
+    labels = sort_overlapped_labels(labels, ndim=ndim)
 
     labels = merge_overlapped_tiles(
         labels,
         overlaps=overlaps,
-        ndim=ndim,
-        persist=persist,
-        progressbar=progressbar
+        ndim=ndim
     )
 
     return labels
@@ -402,19 +290,10 @@ def labels2geojson(labels: da.Array, overlaps: Union[int, List[int]] = 50,
                    threshold: float = 0.05,
                    ndim: int = 2,
                    object_classes: Union[dict, None] = None,
-                   out_dir: Union[pathlib.Path, str, None] = None,
-                   persist: Union[bool, pathlib.Path, str] = False,
-                   progressbar: bool = False,
                    pre_overlapped: bool = False) -> None:
 
     if isinstance(overlaps, int):
         overlaps = [overlaps] * ndim
-
-    if isinstance(persist, str):
-        persist = pathlib.Path(persist)
-
-    if isinstance(out_dir, str):
-        out_dir = pathlib.Path(out_dir)
 
     if not pre_overlapped:
         labels = prepare_input(labels, ndim=ndim)
@@ -430,9 +309,7 @@ def labels2geojson(labels: da.Array, overlaps: Union[int, List[int]] = 50,
         labels,
         overlaps=overlaps,
         threshold=threshold,
-        ndim=ndim,
-        persist=persist,
-        progressbar=progressbar
+        ndim=ndim
     )
 
     if object_classes is None:
@@ -444,13 +321,8 @@ def labels2geojson(labels: da.Array, overlaps: Union[int, List[int]] = 50,
         labels,
         overlaps=overlaps,
         object_classes=object_classes,
-        ndim=ndim,
-        persist=persist,
-        progressbar=progressbar
+        ndim=ndim
     )
-
-    if out_dir is not None:
-        zip_annotated_labeled_tiles(labels, out_dir, progressbar=progressbar)
 
     return labels
 
@@ -459,17 +331,12 @@ def image2geojson(img: da.Array, seg_fn: Callable,
                   overlaps: Union[int, List[int]] = 50,
                   threshold: float = 0.05,
                   ndim: int = 2,
+                  returns_classes: bool = False,
                   object_classes: Union[dict, None] = None,
-                  out_dir: Union[pathlib.Path, str, None] = None,
-                  persist: Union[bool, pathlib.Path, str] = False,
-                  progressbar: bool = False,
                   segmentation_fn_kwargs: Union[dict, None] = None) -> None:
 
     if isinstance(overlaps, int):
         overlaps = [overlaps] * ndim
-
-    if isinstance(persist, str):
-        persist = pathlib.Path(persist)
 
     img_overlapped = prepare_input(img, overlaps=overlaps, ndim=ndim)
 
@@ -477,9 +344,8 @@ def image2geojson(img: da.Array, seg_fn: Callable,
         img_overlapped,
         seg_fn=seg_fn,
         ndim=ndim,
-        segmentation_fn_kwargs=segmentation_fn_kwargs,
-        persist=persist,
-        progressbar=progressbar
+        returns_classes=returns_classes,
+        segmentation_fn_kwargs=segmentation_fn_kwargs
     )
 
     labels = labels2geojson(
@@ -488,9 +354,6 @@ def image2geojson(img: da.Array, seg_fn: Callable,
         threshold=threshold,
         ndim=ndim,
         object_classes=object_classes,
-        out_dir=out_dir,
-        persist=persist,
-        progressbar=progressbar,
         pre_overlapped=True
     )
 
