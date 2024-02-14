@@ -168,7 +168,7 @@ def zip_annotated_labeled_tiles(labels: da.Array,
                                 ) -> pathlib.Path:
     if out_dir is None:
         out_dir = "./annotations_output-"
-        out_dir + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_dir += datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
     if isinstance(out_dir, str):
         out_dir = pathlib.Path(out_dir)
@@ -296,14 +296,7 @@ def labels2geojson(labels: da.Array, overlaps: Union[int, List[int]] = 50,
         overlaps = [overlaps] * ndim
 
     if not pre_overlapped:
-        labels = prepare_input(labels, ndim=ndim)
-
-        labels = da.overlap.overlap(
-            labels,
-            depth=tuple([(0, 0)] * (labels.ndim - ndim)
-                        + [(overlap, overlap) for overlap in overlaps]),
-            boundary=None
-        )
+        labels = prepare_input(labels, overlaps=overlaps, ndim=ndim)
 
     labels = remove_overlapped_labels(
         labels,
@@ -313,7 +306,7 @@ def labels2geojson(labels: da.Array, overlaps: Union[int, List[int]] = 50,
     )
 
     if object_classes is None:
-        classes_ids = range(labels.shape[:(labels.ndim - ndim)]
+        classes_ids = range(labels.shape[:(labels.ndim - ndim)][0]
                             if labels.ndim - ndim > 0 else 1)
         object_classes = {class_id: "cell" for class_id in classes_ids}
 

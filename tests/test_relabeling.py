@@ -15,10 +15,21 @@ from .samples import (CHUNKSIZE, OVERLAPS, THRESHOLD, INPUT_IMG,
                       REMOVAL_RES, GLOBALLY_SORTED, OVERLAPPED_GLOBALLY_SORTED,
                       MERGED_OVERLAPPED_GLOBALLY_SORTED, TRIMMED_MERGED_RES)
 
+from .samples3d import (CHUNKSIZE_3D, OVERLAPS_3D, THRESHOLD_3D, INPUT_IMG_3D,
+                        TRIMMED_MERGED_RES_3D)
+
 from relabel import relabeling
 
 
 def segmentation_fun(img: np.ndarray, **kwargs):
+    """Simple labeling function to test merging capacity of the code.
+    """
+    labels = measure.label(img)
+    labels = labels.astype(np.int32)
+    return labels
+
+
+def segmentation_3d_fun(img: np.ndarray, **kwargs):
     """Simple labeling function to test merging capacity of the code.
     """
     labels = measure.label(img)
@@ -37,8 +48,40 @@ def segmentation_classes_fun(img: np.ndarray, **kwargs):
     return np.stack((labels, classes))
 
 
+@pytest.fixture(scope="module", params=[2, 3])
+def input_output(request):
+    if request.param == 2:
+        expected_values = {
+            "ndim": 2,
+            "returns_classes": False,
+            "segmentation_fun": segmentation_fun,
+            "segmentation_fun_kwargs": {},
+            "object_classes": None,
+            "input": INPUT_IMG,
+            "trimmed_merged_res": TRIMMED_MERGED_RES,
+            "overlaps": OVERLAPS,
+            "chunksize": CHUNKSIZE,
+            "threshold": THRESHOLD,
+        }
+    else:
+        expected_values = {
+            "ndim": 3,
+            "returns_classes": False,
+            "segmentation_fun": segmentation_3d_fun,
+            "segmentation_fun_kwargs": {},
+            "object_classes": None,
+            "input": INPUT_IMG_3D,
+            "trimmed_merged_res": TRIMMED_MERGED_RES_3D,
+            "overlaps": OVERLAPS_3D,
+            "chunksize": CHUNKSIZE_3D,
+            "threshold": THRESHOLD_3D,
+        }
+
+    yield expected_values
+
+
 @pytest.fixture(scope="module", params=[True, False])
-def input_output_2d(request):
+def input_output_steps_2d(request):
     returns_classes = request.param
 
     segmentation_res_arr = SEGMENTATION_RES
@@ -165,12 +208,12 @@ def check_coordinate_list(features_coords_output, features_coords_expected):
     return all_match
 
 
-def test_prepare_input(input_output_2d):
-    ndim = input_output_2d["ndim"]
-    overlaps = input_output_2d["overlaps"]
+def test_prepare_input(input_output_steps_2d):
+    ndim = input_output_steps_2d["ndim"]
+    overlaps = input_output_steps_2d["overlaps"]
 
-    input_img = input_output_2d["input"]
-    img_overlapped_expected = input_output_2d["overlapped_input"]
+    input_img = input_output_steps_2d["input"]
+    img_overlapped_expected = input_output_steps_2d["overlapped_input"]
 
     img_overlapped_output = relabeling.prepare_input(
         input_img,
@@ -186,13 +229,13 @@ def test_prepare_input(input_output_2d):
          f"expected overlapped image\n{img_overlapped_expected}")
 
 
-def test_segment_overlapped_input(input_output_2d):
-    segmentation_fun = input_output_2d["segmentation_fun"]
-    ndim = input_output_2d["ndim"]
-    returns_classes = input_output_2d["returns_classes"]
+def test_segment_overlapped_input(input_output_steps_2d):
+    segmentation_fun = input_output_steps_2d["segmentation_fun"]
+    ndim = input_output_steps_2d["ndim"]
+    returns_classes = input_output_steps_2d["returns_classes"]
 
-    input_img_overlapped = input_output_2d["overlapped_input"]
-    segmentation_expected = input_output_2d["segmentation_res"]
+    input_img_overlapped = input_output_steps_2d["overlapped_input"]
+    segmentation_expected = input_output_steps_2d["segmentation_res"]
 
     local_sort_output = relabeling.segment_overlapped_input(
         input_img_overlapped,
@@ -209,13 +252,13 @@ def test_segment_overlapped_input(input_output_2d):
          f"expected labeled image\n{segmentation_expected}")
 
 
-def test_remove_overlapped_labels(input_output_2d):
-    ndim = input_output_2d["ndim"]
-    overlaps = input_output_2d["overlaps"]
-    threshold = input_output_2d["threshold"]
+def test_remove_overlapped_labels(input_output_steps_2d):
+    ndim = input_output_steps_2d["ndim"]
+    overlaps = input_output_steps_2d["overlaps"]
+    threshold = input_output_steps_2d["threshold"]
 
-    labels_arr = input_output_2d["segmentation_res"]
-    removal_expected = input_output_2d["removal_res"]
+    labels_arr = input_output_steps_2d["segmentation_res"]
+    removal_expected = input_output_steps_2d["removal_res"]
 
     removal_output = relabeling.remove_overlapped_labels(
         labels=labels_arr,
@@ -233,11 +276,11 @@ def test_remove_overlapped_labels(input_output_2d):
          f"{removal_expected}")
 
 
-def test_sort_overlapped_labels(input_output_2d):
-    ndim = input_output_2d["ndim"]
+def test_sort_overlapped_labels(input_output_steps_2d):
+    ndim = input_output_steps_2d["ndim"]
 
-    labels_arr = input_output_2d["removal_res"]
-    sorted_expected = input_output_2d["globally_sorted"]
+    labels_arr = input_output_steps_2d["removal_res"]
+    sorted_expected = input_output_steps_2d["globally_sorted"]
 
     sorted_output = relabeling.sort_overlapped_labels(
         labels=labels_arr,
@@ -252,12 +295,12 @@ def test_sort_overlapped_labels(input_output_2d):
          f"expected sorted labeled image\n\n{sorted_expected}")
 
 
-def test_merge_overlapped_tiles(input_output_2d):
-    ndim = input_output_2d["ndim"]
-    overlaps = input_output_2d["overlaps"]
+def test_merge_overlapped_tiles(input_output_steps_2d):
+    ndim = input_output_steps_2d["ndim"]
+    overlaps = input_output_steps_2d["overlaps"]
 
-    labels_arr = input_output_2d["globally_sorted"]
-    merged_expected = input_output_2d["trimmed_merged_res"]
+    labels_arr = input_output_steps_2d["globally_sorted"]
+    merged_expected = input_output_steps_2d["trimmed_merged_res"]
 
     merged_output = relabeling.merge_overlapped_tiles(
         labels=labels_arr,
@@ -273,13 +316,13 @@ def test_merge_overlapped_tiles(input_output_2d):
          f" image\n{merged_expected}")
 
 
-def test_annotate_labeled_tiles(input_output_2d):
-    ndim = input_output_2d["ndim"]
-    overlaps = input_output_2d["overlaps"]
-    object_classes = input_output_2d["object_classes"]
+def test_annotate_labeled_tiles(input_output_steps_2d):
+    ndim = input_output_steps_2d["ndim"]
+    overlaps = input_output_steps_2d["overlaps"]
+    object_classes = input_output_steps_2d["object_classes"]
 
-    labels_input = input_output_2d["removal_res"]
-    annotations_expected = input_output_2d["annotations_output"]
+    labels_input = input_output_steps_2d["removal_res"]
+    annotations_expected = input_output_steps_2d["annotations_output"]
 
     annotations_output = relabeling.annotate_labeled_tiles(
         labels=labels_input,
@@ -296,8 +339,8 @@ def test_annotate_labeled_tiles(input_output_2d):
          f"{annotations_output}")
 
 
-def test_zip_annotated_labeled_tiles(input_output_2d, temporal_dir):
-    annotations_input = input_output_2d["annotations_output"]
+def test_zip_annotated_labeled_tiles(input_output_steps_2d, temporal_dir):
+    annotations_input = input_output_steps_2d["annotations_output"]
 
     out_zip_filename = relabeling.zip_annotated_labeled_tiles(
         labels=annotations_input,
@@ -327,18 +370,21 @@ def test_zip_annotated_labeled_tiles(input_output_2d, temporal_dir):
         (f"Expected dumped GEOJson zip file to be {annotations_input}, but got"
          f" {annotations_out} instead.")
 
+    if temporal_dir is None:
+        os.remove(out_zip_filename)
 
-def test_image2labels(input_output_2d, temporal_dir):
-    segmentation_fun = input_output_2d["segmentation_fun"]
-    segmentation_fun_kwargs = input_output_2d["segmentation_fun_kwargs"]
-    returns_classes = input_output_2d["returns_classes"]
 
-    ndim = input_output_2d["ndim"]
-    overlaps = input_output_2d["overlaps"]
-    threshold = input_output_2d["threshold"]
+def test_image2labels(input_output, temporal_dir):
+    segmentation_fun = input_output["segmentation_fun"]
+    segmentation_fun_kwargs = input_output["segmentation_fun_kwargs"]
+    returns_classes = input_output["returns_classes"]
 
-    input_img = input_output_2d["input"]
-    labels_expected = input_output_2d["trimmed_merged_res"]
+    ndim = input_output["ndim"]
+    overlaps = input_output["overlaps"]
+    threshold = input_output["threshold"]
+
+    input_img = input_output["input"]
+    labels_expected = input_output["trimmed_merged_res"]
 
     labels_output = relabeling.image2labels(
         input_img,
@@ -359,19 +405,19 @@ def test_image2labels(input_output_2d, temporal_dir):
          f"{labels_output}")
 
 
-def test_image2geojson(input_output_2d):
-    segmentation_fun = input_output_2d["segmentation_fun"]
-    segmentation_fun_kwargs = input_output_2d["segmentation_fun_kwargs"]
-    returns_classes = input_output_2d["returns_classes"]
+def test_image2geojson(input_output_steps_2d):
+    segmentation_fun = input_output_steps_2d["segmentation_fun"]
+    segmentation_fun_kwargs = input_output_steps_2d["segmentation_fun_kwargs"]
+    returns_classes = input_output_steps_2d["returns_classes"]
 
-    ndim = input_output_2d["ndim"]
-    overlaps = input_output_2d["overlaps"]
-    threshold = input_output_2d["threshold"]
+    ndim = input_output_steps_2d["ndim"]
+    overlaps = input_output_steps_2d["overlaps"]
+    threshold = input_output_steps_2d["threshold"]
 
-    object_classes = input_output_2d["object_classes"]
+    object_classes = input_output_steps_2d["object_classes"]
 
-    input_img = input_output_2d["input"]
-    annotations_expected = input_output_2d["annotations_output"]
+    input_img = input_output_steps_2d["input"]
+    annotations_expected = input_output_steps_2d["annotations_output"]
 
     annotations_output = relabeling.image2geojson(
         input_img,
@@ -392,15 +438,17 @@ def test_image2geojson(input_output_2d):
          f"{annotations_output}")
 
 
-def test_labels2geojson(input_output_2d):
-    ndim = input_output_2d["ndim"]
-    overlaps = input_output_2d["overlaps"]
-    threshold = input_output_2d["threshold"]
+def test_labels2geojson(input_output_steps_2d):
+    import matplotlib.pyplot as plt
 
-    object_classes = input_output_2d["object_classes"]
+    ndim = input_output_steps_2d["ndim"]
+    overlaps = input_output_steps_2d["overlaps"]
+    threshold = input_output_steps_2d["threshold"]
 
-    labeled_input_img = input_output_2d["trimmed_merged_res"]
-    annotations_expected = input_output_2d["annotations_output"]
+    object_classes = input_output_steps_2d["object_classes"]
+
+    labeled_input_img = input_output_steps_2d["trimmed_merged_res"]
+    annotations_expected = input_output_steps_2d["annotations_output"]
 
     annotations_output = relabeling.labels2geojson(
         labeled_input_img,
@@ -408,7 +456,7 @@ def test_labels2geojson(input_output_2d):
         threshold=threshold,
         ndim=ndim,
         object_classes=object_classes,
-        pre_overlapped=True
+        pre_overlapped=False
     )
 
     annotations_expected = annotations_expected.compute()
@@ -417,7 +465,3 @@ def test_labels2geojson(input_output_2d):
     assert np.array_equal(annotations_output, annotations_expected), \
         (f"Expected GEOJson annotations to be\n{annotations_expected}\ngot\n"
          f"{annotations_output}")
-
-
-# TODO: Required tests:
-# 5. Test segmentation and relabeling on a 3D image
