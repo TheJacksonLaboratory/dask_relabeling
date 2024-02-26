@@ -29,17 +29,37 @@ def get_valid_overlaps(chunk_location: List[int], num_chunks: List[int],
             for fixed in comb:
                 indices[fixed:fixed] = [None]
 
-            if any(map(lambda level, coord, axis_chunks:
-                       level is not None and (
-                           coord % 2 == 0
-                           or coord == 0 and not level
-                           or coord >= axis_chunks - 1 and level),
+            if all(map(lambda level, coord, axis_chunks:
+                       (level is None
+                        or (coord < axis_chunks - 1 if level else coord > 0)),
                        indices, chunk_location, num_chunks)):
-                continue
-
-            valid_indices.append(indices)
+                valid_indices.append(indices)
 
     return valid_indices
+
+
+def get_merging_overlaps(chunk_location: List[int], num_chunks: List[int],
+                         ndim: int) -> List[List[int]]:
+    # Compute all the valid overlaps between the current chunk and all its
+    # adjacent chunks.
+    merging_indices = get_valid_overlaps(
+        chunk_location=chunk_location,
+        num_chunks=num_chunks,
+        ndim=ndim
+    )
+
+    # Merge overlaps in odd-coordinate locations from even-coordinate locations
+    merging_indices = list(
+        filter(lambda index:
+               any(coord % 2 != 0
+                   for coord, level in zip(chunk_location, index)
+                   if level is not None
+                   ),
+               merging_indices
+               )
+    )
+
+    return merging_indices
 
 
 def get_dest_selection(coord: int, axis_chunks: int, axis_overlap: int,
@@ -79,6 +99,10 @@ def save_intermediate_array(array: da.Array,
                             compressor: Codec = None,
                             object_codec: Codec = None
                             ) -> Union[Tuple[Tuple[int]], None]:
+
+    if isinstance(out_dir, str):
+        out_dir = pathlib.Path(out_dir)
+
     if not os.path.isdir(out_dir):
         os.makedirs(out_dir, exist_ok=True)
 

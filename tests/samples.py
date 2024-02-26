@@ -6,7 +6,7 @@ CHUNKSIZE = [4, 4]
 
 OVERLAPS = [1, 1]
 
-THRESHOLD = 0.25
+THRESHOLD = 0.5
 
 BLOCK_INFOS = [
     {0: {"array-location": [(0, 4), (0, 4)]},
@@ -963,10 +963,3 @@ ANNOTATIONS_OUTPUT = da.block([
         np.array([[0]], dtype=object),
     ]
 ])
-
-
-if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-
-    plt.imshow(INPUT_IMG)
-    plt.show()

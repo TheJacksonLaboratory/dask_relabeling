@@ -9,11 +9,10 @@ from numpy.typing import ArrayLike
 from typing import List, Union
 
 from . import utils
-import threading
-import datetime
+
 
 def remove_overlapped_objects(labeled_image: ArrayLike, overlaps: List[int],
-                              threshold: float = 0.05,
+                              threshold: float = 0.5,
                               ndim: int = 2,
                               block_info: Union[dict, None] = None
                               ) -> np.ndarray:
@@ -24,57 +23,65 @@ def remove_overlapped_objects(labeled_image: ArrayLike, overlaps: List[int],
     num_chunks = block_info[None]["num-chunks"]
 
     # Remove objects touching the `lower` and `upper` borders of the current
-    # axis from labels of this chunk.
-    overlapped_labels = []
+    # axis from labels of this chunk according to the kind of the current
+    # chunk.
+    chunk_labels = np.unique(labeled_image).tolist()
 
-    for level, (axis, coord, axis_chunks, axis_overlap) in itertools.product(
-      [True, False], zip(range(ndim), chunk_location, num_chunks, overlaps)):
-        if axis_overlap > 0 and coord > 0 and level:
-            in_sel = tuple(
-                [slice(None)] * axis
-                + [slice(axis_overlap, 2 * axis_overlap)]
-                + [slice(None)] * (ndim - 1 - axis)
-            )
-            out_sel = tuple(
-                [slice(None)] * axis
-                + [slice(0, axis_overlap)]
-                + [slice(None)] * (ndim - 1 - axis)
-            )
+    in_sel = tuple(
+        map(lambda coord, axis_chunks, axis_overlap:
+            slice(axis_overlap if coord > 0 else 0,
+                  -axis_overlap if coord < axis_chunks - 1 else None),
+            chunk_location, num_chunks, overlaps)
+    )
 
-        elif axis_overlap > 0 and coord < axis_chunks - 1 and not level:
-            in_sel = tuple(
-                [slice(None)] * axis
-                + [slice(-2 * axis_overlap, -axis_overlap)]
-                + [slice(None)] * (ndim - 1 - axis)
-            )
-            out_sel = tuple(
-                [slice(None)] * axis
-                + [slice(-axis_overlap, None)]
-                + [slice(None)] * (ndim - 1 - axis)
-            )
+    labeled_in_margin = labeled_image[in_sel]
+    labeled_in_margin_sum = np.bincount(labeled_in_margin.flatten(),
+                                        minlength=max(chunk_labels) + 1)
+    labeled_image_sum = np.bincount(labeled_image.flatten(),
+                                    minlength=max(chunk_labels) + 1)
+    labeled_in_margin_prop = labeled_in_margin_sum / labeled_image_sum
 
-        else:
-            continue
+    label_id_threshold = np.ones_like(labeled_in_margin_prop)
+    label_id_threshold -= np.finfo(np.float32).eps
 
-        in_margin = labeled_image[in_sel]
-        out_margin = labeled_image[out_sel]
+    # Compute the regions to check (faces, edges, and vertices) that are valid
+    # overlaps between this chunk and all its adjacent chunks.
+    valid_indices = utils.get_valid_overlaps(chunk_location, num_chunks, ndim)
 
-        for curr_label in np.unique(out_margin):
-            if curr_label == 0:
-                continue
+    for indices in valid_indices:
+        out_sel = tuple(map(utils.get_source_selection,
+                            chunk_location, num_chunks, overlaps, indices))
+        labeled_out_margin = labeled_image[out_sel]
 
-            # Get the proportion of the current object that is inside and
-            # outside the overlap margin.
-            in_margin_sum = np.sum(in_margin == curr_label)
-            out_margin_sum = np.sum(out_margin == curr_label)
-            out_margin_prop = out_margin_sum / (in_margin_sum + out_margin_sum)
+        any_odd = any(
+            map(lambda idx, coord:
+                coord % 2 != 0 if idx is not None else False,
+                indices,
+                chunk_location
+                )
+        )
 
-            if (coord % 2 != 0 and out_margin_prop >= threshold
-               or coord % 2 == 0 and (out_margin_prop > (1.0 - threshold))):
-                overlapped_labels.append(curr_label)
+        region_dim = sum(
+            map(lambda idx:
+                1 if idx is not None else 0,
+                indices
+                )
+        )
 
-    for curr_label in overlapped_labels:
-        labeled_image = np.where(labeled_image == curr_label, 0, labeled_image)
+        margin_labels = set(np.unique(labeled_out_margin).tolist())
+        margin_labels = margin_labels.difference({0})
+
+        for label_id in margin_labels:
+            curr_threshold = threshold ** region_dim
+            curr_threshold += any_odd * np.finfo(np.float32).eps
+
+            label_id_threshold[label_id] = min(label_id_threshold[label_id],
+                                               curr_threshold)
+
+    overlapped_labels = np.where(labeled_in_margin_prop < label_id_threshold)
+
+    for label_id in overlapped_labels[0][1:]:
+        labeled_image = np.where(labeled_image == label_id, 0, labeled_image)
 
     return labeled_image
 
@@ -119,7 +126,10 @@ def merge_tiles(labeled_image: ArrayLike, overlaps: List[int],
     """
     num_chunks = block_info[None]["num-chunks"]
     chunk_location = block_info[None]["chunk-location"]
-    valid_indices = utils.get_valid_overlaps(chunk_location, num_chunks, ndim)
+
+    # Compute the regions to check (faces, edges, and vertices) that are valid
+    # for this chunk given its location.
+    valid_indices = utils.get_merging_overlaps(chunk_location, num_chunks, ndim)
 
     # Compute selections from regions to merge
     base_src_sel = tuple(
@@ -141,15 +151,15 @@ def merge_tiles(labeled_image: ArrayLike, overlaps: List[int],
                             chunk_location, num_chunks, overlaps, indices))
         temp_tile_labels[dst_sel] = labeled_image[src_sel]
 
-        for l_label in np.unique(temp_tile_labels):
-            if l_label == 0:
+        for label_id in np.unique(temp_tile_labels):
+            if label_id == 0:
                 continue
 
-            labeled_mask = temp_tile_labels == l_label
+            labeled_mask = temp_tile_labels == label_id
 
             merging_labeled_image = np.where(
                 labeled_mask,
-                l_label,
+                label_id,
                 merging_labeled_image
             )
 
@@ -170,7 +180,9 @@ def merge_tiles_and_classes(labeled_image: ArrayLike,
     num_chunks = block_info[None]["num-chunks"][1:]
     chunk_location = block_info[None]["chunk-location"][1:]
 
-    valid_indices = utils.get_valid_overlaps(chunk_location, num_chunks, ndim)
+    # Compute the regions to check (faces, edges, and vertices) that are valid
+    # for this chunk given its location.
+    valid_indices = utils.get_merging_overlaps(chunk_location, num_chunks, ndim)
 
     # Compute selections from regions to merge
     base_src_sel = tuple(
@@ -199,14 +211,14 @@ def merge_tiles_and_classes(labeled_image: ArrayLike,
         temp_tile_classes[(slice(None), *dst_sel)] = classes[(slice(None),
                                                               *src_sel)]
 
-        for l_label in np.unique(temp_tile_labels):
-            if l_label == 0:
+        for label_id in np.unique(temp_tile_labels):
+            if label_id == 0:
                 continue
 
-            labeled_mask = temp_tile_labels == l_label
+            labeled_mask = temp_tile_labels == label_id
             merging_labeled_image = np.where(
                 labeled_mask,
-                l_label,
+                label_id,
                 merging_labeled_image
             )
 

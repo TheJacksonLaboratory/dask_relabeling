@@ -44,7 +44,7 @@ def segment_overlapped_input(img: da.Array, seg_fn: Callable,
 
 
 def remove_overlapped_labels(labels: da.Array, overlaps: List[int],
-                             threshold: float = 0.05,
+                             threshold: float = 0.5,
                              ndim: int = 2,
                              ) -> da.Array:
     classes = None
@@ -233,7 +233,7 @@ def prepare_input(img: da.Array, overlaps: List[int], ndim: int = 2
 
 def image2labels(img: da.Array, seg_fn: Callable,
                  overlaps: Union[int, List[int]] = 50,
-                 threshold: float = 0.05,
+                 threshold: float = 0.5,
                  ndim: int = 2,
                  returns_classes: bool = False,
                  temp_dir: Union[str, pathlib.Path, None] = None,
@@ -247,6 +247,19 @@ def image2labels(img: da.Array, seg_fn: Callable,
 
     img_overlapped = prepare_input(img, overlaps=overlaps, ndim=ndim)
 
+    if temp_dir is not None:
+        padding = utils.save_intermediate_array(
+            img_overlapped,
+            filename="temp_input.zarr",
+            out_dir=temp_dir,
+            compressor=Blosc(clevel=5)
+        )
+
+        img_overlapped = utils.load_intermediate_array(
+            filename=temp_dir / "temp_input.zarr",
+            padding=padding
+        )
+
     labels = segment_overlapped_input(
         img_overlapped,
         seg_fn=seg_fn,
@@ -254,6 +267,19 @@ def image2labels(img: da.Array, seg_fn: Callable,
         returns_classes=returns_classes,
         segmentation_fn_kwargs=segmentation_fn_kwargs
     )
+
+    if temp_dir is not None:
+        padding = utils.save_intermediate_array(
+            labels,
+            filename="temp_segmented.zarr",
+            out_dir=temp_dir,
+            compressor=Blosc(clevel=5)
+        )
+
+        labels = utils.load_intermediate_array(
+            filename=temp_dir / "temp_segmented.zarr",
+            padding=padding
+        )
 
     labels = remove_overlapped_labels(
         labels,
@@ -277,6 +303,19 @@ def image2labels(img: da.Array, seg_fn: Callable,
 
     labels = sort_overlapped_labels(labels, ndim=ndim)
 
+    if temp_dir is not None:
+        padding = utils.save_intermediate_array(
+            labels,
+            filename="temp_sorted.zarr",
+            out_dir=temp_dir,
+            compressor=Blosc(clevel=5)
+        )
+
+        labels = utils.load_intermediate_array(
+            filename=temp_dir / "temp_sorted.zarr",
+            padding=padding
+        )
+
     labels = merge_overlapped_tiles(
         labels,
         overlaps=overlaps,
@@ -287,7 +326,7 @@ def image2labels(img: da.Array, seg_fn: Callable,
 
 
 def labels2geojson(labels: da.Array, overlaps: Union[int, List[int]] = 50,
-                   threshold: float = 0.05,
+                   threshold: float = 0.5,
                    ndim: int = 2,
                    object_classes: Union[dict, None] = None,
                    pre_overlapped: bool = False) -> None:
@@ -322,7 +361,7 @@ def labels2geojson(labels: da.Array, overlaps: Union[int, List[int]] = 50,
 
 def image2geojson(img: da.Array, seg_fn: Callable,
                   overlaps: Union[int, List[int]] = 50,
-                  threshold: float = 0.05,
+                  threshold: float = 0.5,
                   ndim: int = 2,
                   returns_classes: bool = False,
                   object_classes: Union[dict, None] = None,
