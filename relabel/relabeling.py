@@ -236,29 +236,16 @@ def image2labels(img: da.Array, seg_fn: Callable,
                  threshold: float = 0.5,
                  ndim: int = 2,
                  returns_classes: bool = False,
-                 temp_dir: Union[str, pathlib.Path, None] = None,
+                 cache_dir: Union[str, pathlib.Path, None] = None,
                  segmentation_fn_kwargs: Union[dict, None] = None) -> da.Array:
 
     if isinstance(overlaps, int):
         overlaps = [overlaps] * ndim
 
-    if isinstance(temp_dir, str):
-        temp_dir = pathlib.Path(temp_dir)
+    if isinstance(cache_dir, str):
+        cache_dir = pathlib.Path(cache_dir)
 
     img_overlapped = prepare_input(img, overlaps=overlaps, ndim=ndim)
-
-    if temp_dir is not None:
-        padding = utils.save_intermediate_array(
-            img_overlapped,
-            filename="temp_input.zarr",
-            out_dir=temp_dir,
-            compressor=Blosc(clevel=5)
-        )
-
-        img_overlapped = utils.load_intermediate_array(
-            filename=temp_dir / "temp_input.zarr",
-            padding=padding
-        )
 
     labels = segment_overlapped_input(
         img_overlapped,
@@ -268,19 +255,6 @@ def image2labels(img: da.Array, seg_fn: Callable,
         segmentation_fn_kwargs=segmentation_fn_kwargs
     )
 
-    if temp_dir is not None:
-        padding = utils.save_intermediate_array(
-            labels,
-            filename="temp_segmented.zarr",
-            out_dir=temp_dir,
-            compressor=Blosc(clevel=5)
-        )
-
-        labels = utils.load_intermediate_array(
-            filename=temp_dir / "temp_segmented.zarr",
-            padding=padding
-        )
-
     labels = remove_overlapped_labels(
         labels,
         overlaps=overlaps,
@@ -288,32 +262,19 @@ def image2labels(img: da.Array, seg_fn: Callable,
         ndim=ndim
     )
 
-    if temp_dir is not None:
-        padding = utils.save_intermediate_array(
-            labels,
-            filename="temp_removed.zarr",
-            out_dir=temp_dir,
-            compressor=Blosc(clevel=5)
-        )
-
-        labels = utils.load_intermediate_array(
-            filename=temp_dir / "temp_removed.zarr",
-            padding=padding
-        )
-
     labels = sort_overlapped_labels(labels, ndim=ndim)
 
-    if temp_dir is not None:
-        padding = utils.save_intermediate_array(
+    if cache_dir is not None:
+        pad_added = utils.save_intermediate_array(
             labels,
-            filename="temp_sorted.zarr",
-            out_dir=temp_dir,
+            out_dir=cache_dir,
+            filename="cached_sorted_labels.zarr",
             compressor=Blosc(clevel=5)
         )
 
         labels = utils.load_intermediate_array(
-            filename=temp_dir / "temp_sorted.zarr",
-            padding=padding
+            cache_dir / "cached_sorted_labels.zarr",
+            padding=pad_added
         )
 
     labels = merge_overlapped_tiles(

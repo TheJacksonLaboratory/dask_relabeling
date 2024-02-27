@@ -35,10 +35,18 @@ def remove_overlapped_objects(labeled_image: ArrayLike, overlaps: List[int],
     )
 
     labeled_in_margin = labeled_image[in_sel]
-    labeled_in_margin_sum = np.bincount(labeled_in_margin.flatten(),
-                                        minlength=max(chunk_labels) + 1)
-    labeled_image_sum = np.bincount(labeled_image.flatten(),
-                                    minlength=max(chunk_labels) + 1)
+
+    labeled_in_margin_sum = np.zeros(len(chunk_labels), dtype=np.int32)
+    labeled_image_sum = np.zeros(len(chunk_labels), dtype=np.int32)
+    map_label2idx = {}
+    map_idx2label = {}
+
+    for i, label_id in enumerate(chunk_labels):
+        labeled_in_margin_sum[i] = np.sum(labeled_in_margin == label_id)
+        labeled_image_sum[i] = np.sum(labeled_image == label_id)
+        map_label2idx[label_id] = i
+        map_idx2label[i] = label_id
+
     labeled_in_margin_prop = labeled_in_margin_sum / labeled_image_sum
 
     label_id_threshold = np.ones_like(labeled_in_margin_prop)
@@ -72,15 +80,19 @@ def remove_overlapped_objects(labeled_image: ArrayLike, overlaps: List[int],
         margin_labels = margin_labels.difference({0})
 
         for label_id in margin_labels:
+            label_index = map_label2idx[label_id]
             curr_threshold = threshold ** region_dim
             curr_threshold += any_odd * np.finfo(np.float32).eps
 
-            label_id_threshold[label_id] = min(label_id_threshold[label_id],
-                                               curr_threshold)
+            label_id_threshold[label_index] = min(
+                label_id_threshold[label_index],
+                curr_threshold
+            )
 
     overlapped_labels = np.where(labeled_in_margin_prop < label_id_threshold)
 
-    for label_id in overlapped_labels[0][1:]:
+    for label_index in overlapped_labels[0][1:]:
+        label_id = map_idx2label[label_index]
         labeled_image = np.where(labeled_image == label_id, 0, labeled_image)
 
     return labeled_image
@@ -104,10 +116,10 @@ def sort_indices(labeled_image: ArrayLike, ndim: int = 2) -> np.ndarray:
 
     # Sparse matrices can only be reshaped into 2D matrices, so treat each
     # stack as a different image.
-    for label_idx, label_img in enumerate(labeled_image):
+    for label_index, label_img in enumerate(labeled_image):
         relabel_map = labels_map[label_img.ravel()]
         rlabel_img = relabel_map.reshape(label_img.shape)
-        rlabel_img.todense(out=relabeled_image[label_idx, ...])
+        rlabel_img.todense(out=relabeled_image[label_index, ...])
 
     if ndim > 2:
         labeled_image = np.stack(relabeled_image, axis=0)

@@ -398,7 +398,7 @@ def test_image2labels(input_output, temporal_dir):
         threshold=threshold,
         ndim=ndim,
         returns_classes=returns_classes,
-        temp_dir=temporal_dir,
+        cache_dir=temporal_dir,
         segmentation_fn_kwargs=segmentation_fun_kwargs
     )
 
