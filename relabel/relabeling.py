@@ -50,7 +50,6 @@ def remove_overlapped_labels(labels: da.Array, overlaps: List[int],
     classes = None
     if labels.ndim > ndim:
         labels_chunks = labels.chunks
-
         classes = labels[1:]
         labels = labels[0]
 
@@ -61,7 +60,7 @@ def remove_overlapped_labels(labels: da.Array, overlaps: List[int],
         threshold=threshold,
         ndim=ndim,
         dtype=np.int32,
-        meta=np.empty((0, ), dtype=np.int32)
+        meta=np.empty((0, ), dtype=np.int64)
     )
 
     if classes is not None:
@@ -73,66 +72,22 @@ def remove_overlapped_labels(labels: da.Array, overlaps: List[int],
     return removed
 
 
-def sort_overlapped_labels(labels: da.Array, ndim: int = 2) -> da.Array:
-    classes = None
-    if labels.ndim > ndim:
-        labels_chunks = labels.chunks
-
-        classes = labels[1:]
-        labels = labels[0]
-
-    sorted_labels = da.map_blocks(
-        chunkops.sort_indices,
-        labels,
-        ndim=ndim,
-        dtype=np.int32,
-        meta=np.empty((0, ), dtype=np.int32)
-    )
-
-    # Relabel each chunk to have globally unique label indices.
-    total = 0
-
-    sorted_globally = da.zeros_like(sorted_labels)
-
-    for idx in da.core.slices_from_chunks(sorted_labels.chunks):
-        n = da.max(sorted_labels[idx])
-
-        label_offset = da.where(sorted_labels[idx] > 0, total, 0)
-        sorted_globally[idx] = sorted_labels[idx] + label_offset
-
-        total += n
-
-    if classes is not None:
-        sorted_globally = da.concatenate(
-            (sorted_globally[None, ...], classes),
-            axis=0
-        )
-        sorted_globally = sorted_globally.rechunk(labels_chunks)
-
-    return sorted_globally
-
-
 def merge_overlapped_tiles(labels: da.Array, overlaps: List[int],
                            ndim: int = 2) -> da.Array:
     merged_depth = tuple([0] * (labels.ndim - ndim)
                          + [(overlap, overlap) for overlap in overlaps])
 
-    if labels.ndim > ndim:
-        merge_func = chunkops.merge_tiles_and_classes
-    else:
-        merge_func = chunkops.merge_tiles
-
     # Merge the overlapped objects from adjacent chunks for all chunk tiles.
     merged = da.map_overlap(
-        merge_func,
+        chunkops.merge_tiles,
         labels,
         overlaps=overlaps,
         ndim=ndim,
         depth=merged_depth,
         boundary=None,
         trim=False,
-        dtype=np.int32,
-        meta=np.empty((0, 0), dtype=np.int32)
+        dtype=np.int64,
+        meta=np.empty((0, 0), dtype=np.int64)
     )
 
     merged = da.overlap.trim_overlap(merged, merged_depth, boundary=None)
@@ -236,14 +191,10 @@ def image2labels(img: da.Array, seg_fn: Callable,
                  threshold: float = 0.5,
                  ndim: int = 2,
                  returns_classes: bool = False,
-                 cache_dir: Union[str, pathlib.Path, None] = None,
                  segmentation_fn_kwargs: Union[dict, None] = None) -> da.Array:
 
     if isinstance(overlaps, int):
         overlaps = [overlaps] * ndim
-
-    if isinstance(cache_dir, str):
-        cache_dir = pathlib.Path(cache_dir)
 
     img_overlapped = prepare_input(img, overlaps=overlaps, ndim=ndim)
 
@@ -261,21 +212,6 @@ def image2labels(img: da.Array, seg_fn: Callable,
         threshold=threshold,
         ndim=ndim
     )
-
-    labels = sort_overlapped_labels(labels, ndim=ndim)
-
-    if cache_dir is not None:
-        pad_added = utils.save_intermediate_array(
-            labels,
-            out_dir=cache_dir,
-            filename="cached_sorted_labels.zarr",
-            compressor=Blosc(clevel=5)
-        )
-
-        labels = utils.load_intermediate_array(
-            cache_dir / "cached_sorted_labels.zarr",
-            padding=pad_added
-        )
 
     labels = merge_overlapped_tiles(
         labels,
@@ -351,3 +287,40 @@ def image2geojson(img: da.Array, seg_fn: Callable,
     )
 
     return labels
+
+
+def sort_label_indices(labels: da.Array, ndim: int = 2) -> da.Array:
+    """Sort the indices of all labeled objects in the dask array to be an
+    uninterrupted sequence atarting at 1.
+
+    This triggers the compute over the whole image and therefore should be used
+    only when an uninterrupted sequence of label indices is exctiictly
+    necessary.
+
+    It is recommended to pre-compute the labels before sorting the indices,
+    either by using labels.persist(), or saving them into a temporary file
+    (e.g. a zarr array) and reopening them again as a dask array.
+    """
+    classes = None
+    if labels.ndim > ndim:
+        labels_chunks = labels.chunks
+
+        classes = labels[1:]
+        labels = labels[0]
+
+    unique_labels = da.unique(labels).compute().tolist()
+
+    sorted_labels = da.map_blocks(
+        chunkops.sort_indices,
+        labels,
+        unique_labels=unique_labels,
+        dtype=labels.dtype,
+        meta=np.empty((0, ), dtype=labels.dtype)
+    )
+
+    if classes is not None:
+        sorted_labels = da.concatenate((sorted_labels[None, ...],
+                                        classes), axis=0)
+        sorted_labels = sorted_labels.rechunk(labels_chunks)
+
+    return sorted_labels

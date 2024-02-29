@@ -12,15 +12,12 @@ import geojson
 
 from .samples import (CHUNKSIZE, OVERLAPS, THRESHOLD, INPUT_IMG,
                       OVERLAPPED_INPUT, ANNOTATIONS_OUTPUT, SEGMENTATION_RES,
-                      REMOVAL_RES, GLOBALLY_SORTED, OVERLAPPED_GLOBALLY_SORTED,
-                      MERGED_OVERLAPPED_GLOBALLY_SORTED, TRIMMED_MERGED_RES)
+                      REMOVAL_RES, TRIMMED_MERGED_RES, SORTED_MERGED_RES)
 
 from .samples3d import (CHUNKSIZE_3D, OVERLAPS_3D, THRESHOLD_3D, INPUT_IMG_3D,
                         OVERLAPPED_INPUT_3D, SEGMENTATION_RES_3D,
-                        REMOVAL_RES_3D, GLOBALLY_SORTED_3D,
-                        OVERLAPPED_GLOBALLY_SORTED_3D,
-                        MERGED_OVERLAPPED_GLOBALLY_SORTED_3D,
-                        TRIMMED_MERGED_RES_3D)
+                        REMOVAL_RES_3D, TRIMMED_MERGED_RES_3D,
+                        SORTED_MERGED_RES_3D)
 
 from relabel import relabeling
 
@@ -55,9 +52,8 @@ def input_output_2d():
         "overlapped_input_arr": OVERLAPPED_INPUT,
         "segmentation_arr": SEGMENTATION_RES,
         "removal_arr": REMOVAL_RES,
-        "globally_sorted_arr": GLOBALLY_SORTED,
-        "merged_globally_sorted_arr": MERGED_OVERLAPPED_GLOBALLY_SORTED,
         "trimmed_merged_arr": TRIMMED_MERGED_RES,
+        "sorted_merged_arr": SORTED_MERGED_RES,
         "overlaps": OVERLAPS,
         "chunksize": CHUNKSIZE,
         "threshold": THRESHOLD,
@@ -78,9 +74,8 @@ def input_output_3d():
         "overlapped_input_arr": OVERLAPPED_INPUT_3D,
         "segmentation_arr": SEGMENTATION_RES_3D,
         "removal_arr": REMOVAL_RES_3D,
-        "globally_sorted_arr": GLOBALLY_SORTED_3D,
-        "merged_globally_sorted_arr": MERGED_OVERLAPPED_GLOBALLY_SORTED_3D,
         "trimmed_merged_arr": TRIMMED_MERGED_RES_3D,
+        "sorted_merged_arr": SORTED_MERGED_RES_3D,
         "overlaps": OVERLAPS_3D,
         "chunksize": CHUNKSIZE_3D,
         "threshold": THRESHOLD_3D,
@@ -108,27 +103,19 @@ def add_classes_channel(expected_values):
         expected_values["removal_arr"].rechunk(
             ((2, ), *expected_values["removal_arr"].chunks[1:]))
 
-    expected_values["globally_sorted_arr"] = da.stack(
-        (expected_values["globally_sorted_arr"],
-            da.where(expected_values["globally_sorted_arr"], 1, 0)))
-    expected_values["globally_sorted_arr"] = \
-        expected_values["globally_sorted_arr"].rechunk(
-            ((2, ), *expected_values["globally_sorted_arr"].chunks[1:]))
-
-    expected_values["merged_globally_sorted_arr"] = da.stack(
-        (expected_values["merged_globally_sorted_arr"],
-            da.where(expected_values["merged_globally_sorted_arr"], 1, 0)))
-    expected_values["merged_globally_sorted_arr"] = \
-        expected_values["merged_globally_sorted_arr"].rechunk(
-            ((2, ),
-                *expected_values["merged_globally_sorted_arr"].chunks[1:]))
-
     expected_values["trimmed_merged_arr"] = da.stack(
         (expected_values["trimmed_merged_arr"],
             da.where(expected_values["trimmed_merged_arr"], 1, 0)))
     expected_values["trimmed_merged_arr"] = \
         expected_values["trimmed_merged_arr"].rechunk(
             ((2, ), *expected_values["trimmed_merged_arr"].chunks[1:]))
+
+    expected_values["sorted_merged_arr"] = da.stack(
+        (expected_values["sorted_merged_arr"],
+            da.where(expected_values["sorted_merged_arr"], 1, 0)))
+    expected_values["sorted_merged_arr"] = \
+        expected_values["sorted_merged_arr"].rechunk(
+            ((2, ), *expected_values["sorted_merged_arr"].chunks[1:]))
 
     expected_values["object_classes"] = {1: "cell"}
 
@@ -168,7 +155,7 @@ def input_output_2d_only(request):
 @pytest.fixture(scope="module", params=[
     (None, False), (str, True), (pathlib.Path, True), (pathlib.Path, False)
 ])
-def temporal_dir(request):
+def temporal_directory(request):
     temp_dir_class, pre_existent = request.param
 
     if temp_dir_class is None:
@@ -275,36 +262,16 @@ def test_remove_overlapped_labels(input_output_wclasses):
     removal_expected = removal_expected.compute()
 
     assert np.array_equal(removal_output, removal_expected), \
-        (f"Labeled output does not match the expected after removal of overlapping regions"
-         f"at\n{np.where(removal_output != removal_expected)}\n"
+        (f"Labeled output does not match the expected after removal of overlapping regions\n"
          f"{removal_output[np.where(removal_output != removal_expected)]}\n\n"
          f"{removal_expected[np.where(removal_output != removal_expected)]}")
-
-
-def test_sort_overlapped_labels(input_output_wclasses):
-    ndim = input_output_wclasses["ndim"]
-
-    labels_arr = input_output_wclasses["removal_arr"]
-    sorted_expected = input_output_wclasses["globally_sorted_arr"]
-
-    sorted_output = relabeling.sort_overlapped_labels(
-        labels=labels_arr,
-        ndim=ndim
-    )
-
-    sorted_output = sorted_output.compute()
-    sorted_expected = sorted_expected.compute()
-
-    assert np.array_equal(sorted_output, sorted_expected), \
-        (f"Sorted labeled output\n\n{sorted_output}\ndoes not match the "
-         f"expected sorted labeled image\n\n{sorted_expected}")
 
 
 def test_merge_overlapped_tiles(input_output_wclasses):
     ndim = input_output_wclasses["ndim"]
     overlaps = input_output_wclasses["overlaps"]
 
-    labels_arr = input_output_wclasses["globally_sorted_arr"]
+    labels_arr = input_output_wclasses["removal_arr"]
     merged_expected = input_output_wclasses["trimmed_merged_arr"]
 
     merged_output = relabeling.merge_overlapped_tiles(
@@ -317,8 +284,9 @@ def test_merge_overlapped_tiles(input_output_wclasses):
     merged_expected = merged_expected.compute()
 
     assert np.array_equal(merged_output, merged_expected), \
-        (f"Labeled output\n{merged_output}\ndoes not match the expected merged"
-         f" image\n{merged_expected}")
+        (f"Labeled output does not match the expected merging overlapping regions\n"
+         f"{merged_output[np.where(merged_output != merged_expected)]}\n\n"
+         f"{merged_expected[np.where(merged_output != merged_expected)]}")
 
 
 def test_annotate_labeled_tiles(input_output_2d_only):
@@ -340,16 +308,18 @@ def test_annotate_labeled_tiles(input_output_2d_only):
     annotations_output = annotations_output.compute()
 
     assert np.array_equal(annotations_output, annotations_expected), \
-        (f"Expected GEOJson annotations to be\n{annotations_expected}\ngot\n"
-         f"{annotations_output}")
+        (f"Expected GEOJson annotations differ at\n"
+         f"{np.where(annotations_expected != annotations_output)}\n\ngot:\n"
+         f"{annotations_output[np.where(annotations_output != annotations_expected)]}\n\nexpected:\n"
+         f"{annotations_expected[np.where(annotations_output != annotations_expected)]}")
 
 
-def test_zip_annotated_labeled_tiles(input_output_2d_only, temporal_dir):
+def test_zip_annotated_labeled_tiles(input_output_2d_only, temporal_directory):
     annotations_input = input_output_2d_only["annotations_output"]
 
     out_zip_filename = relabeling.zip_annotated_labeled_tiles(
         labels=annotations_input,
-        out_dir=temporal_dir
+        out_dir=temporal_directory
     )
 
     assert str(out_zip_filename).endswith(".zip"), \
@@ -375,11 +345,11 @@ def test_zip_annotated_labeled_tiles(input_output_2d_only, temporal_dir):
         (f"Expected dumped GEOJson zip file to be {annotations_input}, but got"
          f" {annotations_out} instead.")
 
-    if temporal_dir is None:
+    if temporal_directory is None:
         os.remove(out_zip_filename)
 
 
-def test_image2labels(input_output, temporal_dir):
+def test_image2labels(input_output):
     segmentation_fun = input_output["segmentation_fun"]
     segmentation_fun_kwargs = input_output["segmentation_fun_kwargs"]
     returns_classes = input_output["returns_classes"]
@@ -398,7 +368,6 @@ def test_image2labels(input_output, temporal_dir):
         threshold=threshold,
         ndim=ndim,
         returns_classes=returns_classes,
-        cache_dir=temporal_dir,
         segmentation_fn_kwargs=segmentation_fun_kwargs
     )
 
@@ -468,3 +437,22 @@ def test_labels2geojson(input_output_2d_only):
     assert np.array_equal(annotations_output, annotations_expected), \
         (f"Expected GEOJson annotations to be\n{annotations_expected}\ngot\n"
          f"{annotations_output}")
+
+
+def test_sort_label_indices(input_output_wclasses):
+    ndim = input_output_wclasses["ndim"]
+
+    labels_arr = input_output_wclasses["trimmed_merged_arr"]
+    sorted_expected = input_output_wclasses["sorted_merged_arr"]
+
+    sorted_output = relabeling.sort_label_indices(
+        labels=labels_arr,
+        ndim=ndim
+    )
+
+    sorted_output = sorted_output.compute()
+    sorted_expected = sorted_expected.compute()
+
+    assert np.array_equal(sorted_output, sorted_expected), \
+        (f"Sorted labeled output\n\n{sorted_output}\ndoes not match the "
+         f"expected sorted labeled image\n\n{sorted_expected}")

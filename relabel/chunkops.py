@@ -1,6 +1,4 @@
 import pathlib
-import itertools
-
 import numpy as np
 import scipy
 import geojson
@@ -38,6 +36,7 @@ def remove_overlapped_objects(labeled_image: ArrayLike, overlaps: List[int],
 
     labeled_in_margin_sum = np.zeros(len(chunk_labels), dtype=np.int32)
     labeled_image_sum = np.zeros(len(chunk_labels), dtype=np.int32)
+
     map_label2idx = {}
     map_idx2label = {}
 
@@ -89,45 +88,39 @@ def remove_overlapped_objects(labeled_image: ArrayLike, overlaps: List[int],
                 curr_threshold
             )
 
+    # Remove all overlapped objects that are expected to be detected fully by
+    # an adjacent chunk.
     overlapped_labels = np.where(labeled_in_margin_prop < label_id_threshold)
+    removed_labeled_image = np.copy(labeled_image)
 
     for label_index in overlapped_labels[0][1:]:
         label_id = map_idx2label[label_index]
-        labeled_image = np.where(labeled_image == label_id, 0, labeled_image)
+        removed_labeled_image = np.where(labeled_image == label_id, 0,
+                                         removed_labeled_image)
 
-    return labeled_image
+    # Offset the label indices to prevent collision between indices in
+    # different chunks.
+    labels_offset = np.ravel_multi_index(chunk_location, num_chunks)
+    labels_offset *= 2**31 // np.prod(num_chunks) + 2**31
+
+    labels_offset_array = np.where(removed_labeled_image, labels_offset, 0)
+
+    removed_labeled_image = removed_labeled_image.astype(np.int64)
+    removed_labeled_image += labels_offset_array
+
+    return removed_labeled_image
 
 
-def sort_indices(labeled_image: ArrayLike, ndim: int = 2) -> np.ndarray:
+def sort_indices(labeled_image: ArrayLike, unique_labels: list) -> np.ndarray:
     """Sort label indices to have them as a continuous sequence.
     """
-    labels_map = np.unique(labeled_image)
+    relabeled_image = np.copy(labeled_image)
+    for label_id in np.unique(labeled_image):
+        relabeled_image = np.where(labeled_image == label_id,
+                                   unique_labels.index(label_id),
+                                   relabeled_image)
 
-    labels_map = scipy.sparse.csr_matrix(
-        (np.arange(labels_map.size, dtype=np.int32),
-            (labels_map, np.zeros_like(labels_map))),
-        shape=(labels_map.max() + 1, 1)
-    )
-
-    if ndim == 2:
-        labeled_image = labeled_image[None, ...]
-
-    relabeled_image = np.empty_like(labeled_image)
-
-    # Sparse matrices can only be reshaped into 2D matrices, so treat each
-    # stack as a different image.
-    for label_index, label_img in enumerate(labeled_image):
-        relabel_map = labels_map[label_img.ravel()]
-        rlabel_img = relabel_map.reshape(label_img.shape)
-        rlabel_img.todense(out=relabeled_image[label_index, ...])
-
-    if ndim > 2:
-        labeled_image = np.stack(relabeled_image, axis=0)
-
-    else:
-        labeled_image = relabeled_image[0]
-
-    return labeled_image
+    return relabeled_image
 
 
 def merge_tiles(labeled_image: ArrayLike, overlaps: List[int],
@@ -138,10 +131,18 @@ def merge_tiles(labeled_image: ArrayLike, overlaps: List[int],
     """
     num_chunks = block_info[None]["num-chunks"]
     chunk_location = block_info[None]["chunk-location"]
+    classes = None
+    if labeled_image.ndim > ndim:
+        classes = labeled_image[1:]
+        labeled_image = labeled_image[0]
+
+        num_chunks = num_chunks[1:]
+        chunk_location = chunk_location[1:]
 
     # Compute the regions to check (faces, edges, and vertices) that are valid
     # for this chunk given its location.
-    valid_indices = utils.get_merging_overlaps(chunk_location, num_chunks, ndim)
+    valid_indices = utils.get_merging_overlaps(chunk_location, num_chunks,
+                                               ndim)
 
     # Compute selections from regions to merge
     base_src_sel = tuple(
@@ -152,16 +153,25 @@ def merge_tiles(labeled_image: ArrayLike, overlaps: List[int],
     )
 
     merging_labeled_image = np.copy(labeled_image[base_src_sel])
-
     temp_tile_labels = np.empty_like(merging_labeled_image)
 
+    if classes is not None:
+        merging_classes = np.copy(classes[(slice(None), *base_src_sel)])
+        temp_tile_classes = np.empty_like(merging_classes)
+
     for indices in valid_indices:
-        temp_tile_labels[:] = 0
         dst_sel = tuple(map(utils.get_dest_selection,
                             chunk_location, num_chunks, overlaps, indices))
         src_sel = tuple(map(utils.get_source_selection,
                             chunk_location, num_chunks, overlaps, indices))
+
+        temp_tile_labels[:] = 0
         temp_tile_labels[dst_sel] = labeled_image[src_sel]
+
+        if classes is not None:
+            temp_tile_classes[:] = 0
+            temp_tile_classes[(slice(None), *dst_sel)] = classes[(slice(None),
+                                                                  *src_sel)]
 
         for label_id in np.unique(temp_tile_labels):
             if label_id == 0:
@@ -175,73 +185,16 @@ def merge_tiles(labeled_image: ArrayLike, overlaps: List[int],
                 merging_labeled_image
             )
 
-    return merging_labeled_image
+            if classes is not None:
+                merging_classes = \
+                    merging_classes * np.bitwise_not(labeled_mask[None, ...])\
+                    + temp_tile_classes * labeled_mask[None, ...]
 
-
-def merge_tiles_and_classes(labeled_image: ArrayLike,
-                            overlaps: List[int],
-                            ndim: int = 2,
-                            block_info: Union[dict, None] = None
-                            ) -> np.ndarray:
-    """Merge objects detected in overlapping regions from adjacent chunks of
-    this chunk.
-    """
-    classes = labeled_image[1:]
-    labeled_image = labeled_image[0]
-
-    num_chunks = block_info[None]["num-chunks"][1:]
-    chunk_location = block_info[None]["chunk-location"][1:]
-
-    # Compute the regions to check (faces, edges, and vertices) that are valid
-    # for this chunk given its location.
-    valid_indices = utils.get_merging_overlaps(chunk_location, num_chunks, ndim)
-
-    # Compute selections from regions to merge
-    base_src_sel = tuple(
-        map(lambda coord, axis_chunks, axis_overlap:
-            slice(axis_overlap if coord > 0 else 0,
-                  -axis_overlap if coord < axis_chunks - 1 else None),
-            chunk_location, num_chunks, overlaps)
-    )
-
-    merging_labeled_image = np.copy(labeled_image[base_src_sel])
-    merging_classes = np.copy(classes[(slice(None), *base_src_sel)])
-
-    temp_tile_labels = np.empty_like(merging_labeled_image)
-    temp_tile_classes = np.empty_like(merging_classes)
-
-    for indices in valid_indices:
-        temp_tile_labels[:] = 0
-        temp_tile_classes[:] = 0
-
-        dst_sel = tuple(map(utils.get_dest_selection,
-                            chunk_location, num_chunks, overlaps, indices))
-        src_sel = tuple(map(utils.get_source_selection,
-                            chunk_location, num_chunks, overlaps, indices))
-
-        temp_tile_labels[dst_sel] = labeled_image[src_sel]
-        temp_tile_classes[(slice(None), *dst_sel)] = classes[(slice(None),
-                                                              *src_sel)]
-
-        for label_id in np.unique(temp_tile_labels):
-            if label_id == 0:
-                continue
-
-            labeled_mask = temp_tile_labels == label_id
-            merging_labeled_image = np.where(
-                labeled_mask,
-                label_id,
-                merging_labeled_image
-            )
-
-            merging_classes = \
-                merging_classes * np.bitwise_not(labeled_mask[None, ...])\
-                + temp_tile_classes * labeled_mask[None, ...]
-
-    merging_labeled_image = np.concatenate(
-        (merging_labeled_image[None, ...], merging_classes),
-        axis=0
-    )
+    if classes is not None:
+        merging_labeled_image = np.concatenate(
+            (merging_labeled_image[None, ...], merging_classes),
+            axis=0
+        )
 
     return merging_labeled_image
 
