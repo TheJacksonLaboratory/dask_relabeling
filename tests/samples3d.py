@@ -7,7 +7,7 @@ CHUNKSIZE_3D = [5,  5,  5]
 
 OVERLAPS_3D = [2,  2,  2]
 
-THRESHOLD_3D = 0.5
+THRESHOLD_3D = 0.125
 
 BLOCK_INFOS = [
     {0: {"array-location": [(0, 5), (0, 5), (0, 5)]},

@@ -188,11 +188,10 @@ def prepare_input(img: da.Array, overlaps: List[int], ndim: int = 2
 
 def image2labels(img: da.Array, seg_fn: Callable,
                  overlaps: Union[int, List[int]] = 50,
-                 threshold: float = 0.5,
+                 threshold: float = 0.05,
                  ndim: int = 2,
                  returns_classes: bool = False,
                  segmentation_fn_kwargs: Union[dict, None] = None) -> da.Array:
-
     if isinstance(overlaps, int):
         overlaps = [overlaps] * ndim
 

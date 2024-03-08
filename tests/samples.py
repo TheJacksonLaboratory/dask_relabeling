@@ -6,7 +6,7 @@ CHUNKSIZE = [4, 4]
 
 OVERLAPS = [2, 2]
 
-THRESHOLD = 0.5
+THRESHOLD = 0.25
 
 BLOCK_INFOS = [
     {0: {"array-location": [(0, 4), (0, 4)]},

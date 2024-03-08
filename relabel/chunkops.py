@@ -8,9 +8,11 @@ from typing import List, Union
 
 from . import utils
 
+import matplotlib.pyplot as plt
+
 
 def remove_overlapped_objects(labeled_image: ArrayLike, overlaps: List[int],
-                              threshold: float = 0.5,
+                              threshold: float = 0.05,
                               ndim: int = 2,
                               block_info: Union[dict, None] = None
                               ) -> np.ndarray:
@@ -34,8 +36,8 @@ def remove_overlapped_objects(labeled_image: ArrayLike, overlaps: List[int],
 
     labeled_in_margin = labeled_image[in_sel]
 
-    labeled_in_margin_sum = np.zeros(len(chunk_labels), dtype=np.int32)
-    labeled_image_sum = np.zeros(len(chunk_labels), dtype=np.int32)
+    labeled_in_margin_sum = np.zeros(len(chunk_labels), dtype=np.float32)
+    labeled_image_sum = np.zeros(len(chunk_labels), dtype=np.float32)
 
     map_label2idx = {}
     map_idx2label = {}
@@ -47,53 +49,42 @@ def remove_overlapped_objects(labeled_image: ArrayLike, overlaps: List[int],
         map_idx2label[i] = label_id
 
     labeled_in_margin_prop = labeled_in_margin_sum / labeled_image_sum
-
-    label_id_threshold = np.ones_like(labeled_in_margin_prop)
-    label_id_threshold -= np.finfo(np.float32).eps
+    labels_region_dim = np.zeros_like(labeled_in_margin_prop, dtype=np.int8)
+    labels_region_dim[labeled_in_margin_prop > (1 - threshold)] = ndim + 1
+    labels_region_dim[labeled_in_margin_prop < threshold] = -(ndim + 1)
 
     # Compute the regions to check (faces, edges, and vertices) that are valid
     # overlaps between this chunk and all its adjacent chunks.
     valid_indices = utils.get_valid_overlaps(chunk_location, num_chunks, ndim)
 
     for indices in valid_indices:
+        drop_label = any(map(lambda idx, coord:
+                             coord % 2 != 0 if idx is not None else False,
+                             indices,
+                             chunk_location))
+
+        region_dim = len(list(filter(lambda idx: idx is not None, indices)))
+
         out_sel = tuple(map(utils.get_source_selection,
                             chunk_location, num_chunks, overlaps, indices))
+
         labeled_out_margin = labeled_image[out_sel]
 
-        any_odd = any(
-            map(lambda idx, coord:
-                coord % 2 != 0 if idx is not None else False,
-                indices,
-                chunk_location
-                )
-        )
+        for curr_label in np.unique(labeled_out_margin):
+            if curr_label == 0:
+                continue
 
-        region_dim = sum(
-            map(lambda idx:
-                1 if idx is not None else 0,
-                indices
-                )
-        )
-
-        margin_labels = set(np.unique(labeled_out_margin).tolist())
-        margin_labels = margin_labels.difference({0})
-
-        for label_id in margin_labels:
-            label_index = map_label2idx[label_id]
-            curr_threshold = threshold ** region_dim
-            curr_threshold += any_odd * np.finfo(np.float32).eps
-
-            label_id_threshold[label_index] = min(
-                label_id_threshold[label_index],
-                curr_threshold
-            )
+            curr_idx = map_label2idx[curr_label]
+            if (labeled_in_margin_prop[curr_idx] >= threshold
+               and abs(labels_region_dim[curr_idx]) < region_dim):
+                labels_region_dim[curr_idx] = (-1) ** drop_label * region_dim
 
     # Remove all overlapped objects that are expected to be detected fully by
     # an adjacent chunk.
-    overlapped_labels = np.where(labeled_in_margin_prop < label_id_threshold)
+    overlapped_labels = np.where(labels_region_dim < 0)
     removed_labeled_image = np.copy(labeled_image)
 
-    for label_index in overlapped_labels[0][1:]:
+    for label_index in overlapped_labels[0]:
         label_id = map_idx2label[label_index]
         removed_labeled_image = np.where(labeled_image == label_id, 0,
                                          removed_labeled_image)
@@ -104,6 +95,13 @@ def remove_overlapped_objects(labeled_image: ArrayLike, overlaps: List[int],
     labels_offset *= 2**31 // np.prod(num_chunks) + 2**31
 
     labels_offset_array = np.where(removed_labeled_image, labels_offset, 0)
+
+    # plt.title(f"[{chunk_location}] Removing labels: {overlapped_labels[0]}")
+    # plt.subplot(1, 2, 1)
+    # plt.imshow(labeled_image)
+    # plt.subplot(1, 2, 2)
+    # plt.imshow(removed_labeled_image)
+    # plt.show()
 
     removed_labeled_image = removed_labeled_image.astype(np.int64)
     removed_labeled_image += labels_offset_array

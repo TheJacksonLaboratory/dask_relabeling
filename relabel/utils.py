@@ -1,15 +1,10 @@
-import os
-import pathlib
 import itertools
 
 import numpy as np
 import cv2
 import geojson
 
-import dask.array as da
-from numcodecs.abc import Codec
-
-from typing import List, Tuple, Union
+from typing import List, Union
 
 
 def get_valid_overlaps(chunk_location: List[int], num_chunks: List[int],
