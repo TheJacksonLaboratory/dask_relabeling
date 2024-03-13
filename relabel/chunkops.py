@@ -1,14 +1,11 @@
 import pathlib
 import numpy as np
-import scipy
-import geojson
+import json
 
 from numpy.typing import ArrayLike
 from typing import List, Union
 
 from . import utils
-
-import matplotlib.pyplot as plt
 
 
 def remove_overlapped_objects(labeled_image: ArrayLike, overlaps: List[int],
@@ -95,13 +92,6 @@ def remove_overlapped_objects(labeled_image: ArrayLike, overlaps: List[int],
     labels_offset *= 2**31 // np.prod(num_chunks) + 2**31
 
     labels_offset_array = np.where(removed_labeled_image, labels_offset, 0)
-
-    # plt.title(f"[{chunk_location}] Removing labels: {overlapped_labels[0]}")
-    # plt.subplot(1, 2, 1)
-    # plt.imshow(labeled_image)
-    # plt.subplot(1, 2, 2)
-    # plt.imshow(removed_labeled_image)
-    # plt.show()
 
     removed_labeled_image = removed_labeled_image.astype(np.int64)
     removed_labeled_image += labels_offset_array
@@ -251,7 +241,7 @@ def dump_annotaions(labeled_image_annotations: ArrayLike,
         out_filename = out_dir / out_filename
 
         with open(out_filename, "w") as fp:
-            geojson.dump(geojson_annotation, fp)
+            json.dump(geojson_annotation, fp)
 
     else:
         out_filename = 0

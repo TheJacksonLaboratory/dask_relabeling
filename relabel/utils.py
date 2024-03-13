@@ -1,10 +1,64 @@
 import itertools
 
 import numpy as np
-import cv2
-import geojson
+from numpy.typing import ArrayLike
 
-from typing import List, Union
+from typing import List, Union, TypeVar, Any
+
+try:
+    import cv2
+
+    def find_contours(mask: ArrayLike) -> List[List[int]]:
+        contour_coords, _ = cv2.findContours(mask, mode=cv2.RETR_TREE,
+                                             method=cv2.CHAIN_APPROX_NONE)
+        return contour_coords
+
+except ImportError:
+
+    def find_contours(mask: ArrayLike) -> List[List[int]]:
+        # This does not replicates the functionality of findContours, just
+        # gives a work around when OpenCV is not installed.
+        contour_coords = (np.argwhere(mask)[:, None, (1, 0)], )
+        return contour_coords
+
+
+try:
+    import geojson
+
+    FeatureCollection = TypeVar('FeatureCollection', geojson.FeatureCollection,
+                                Any)
+
+    def geojson_feature(coordinates_list: List[List[int]]
+                        ) -> geojson.Feature:
+        feature = geojson.Feature(geometry=geojson.Polygon([coordinates_list]))
+        return feature
+
+    def geojson_feature_collection(annotations_list: List[geojson.Feature]
+                                   ) -> geojson.FeatureCollection:
+        collection = geojson.FeatureCollection(annotations_list)
+        return collection
+
+except ImportError:
+    # When GeoJSON is not installed, the following functions replicate the
+    # basic functionality of that library.
+    FeatureCollection = TypeVar('FeatureCollection', dict, Any)
+
+    def geojson_feature(coordinates_list: List[List[float]]) -> dict:
+        feature = {
+            "geometry": {
+                "coordinates": [coordinates_list],
+                "type": "Polygon"
+            },
+            "type": "Feature"
+        }
+        return feature
+
+    def geojson_feature_collection(annotations_list: List[dict]) -> dict:
+        collection = {
+            "features": annotations_list,
+            "type": "FeatureCollection"
+        }
+        return collection
 
 
 def get_valid_overlaps(chunk_location: List[int], num_chunks: List[int],
@@ -88,10 +142,10 @@ def get_source_selection(coord: int, axis_chunks: int, axis_overlap: int,
     return sel
 
 
-def labels_to_annotations(labels: np.ndarray, object_classes: dict,
-                          classes: Union[np.ndarray, None] = None,
-                          offset: Union[np.ndarray, None] = None
-                          ) -> geojson.Feature:
+def labels_to_annotations(labels: ArrayLike, object_classes: dict,
+                          classes: Union[ArrayLike, None] = None,
+                          offset: Union[ArrayLike, None] = None
+                          ) -> FeatureCollection:
     annotations = []
     for curr_l in np.unique(labels):
         if curr_l == 0:
@@ -105,9 +159,7 @@ def labels_to_annotations(labels: np.ndarray, object_classes: dict,
 
         object_type = object_classes[curr_class]
 
-        contour_coords, _ = cv2.findContours(mask.astype(np.uint8),
-                                             mode=cv2.RETR_TREE,
-                                             method=cv2.CHAIN_APPROX_NONE)
+        contour_coords = find_contours(mask.astype(np.uint8))
 
         contours_indices = [max(map(lambda i, cc:
                                     (len(cc), i),
@@ -123,15 +175,13 @@ def labels_to_annotations(labels: np.ndarray, object_classes: dict,
                 cc += offset[None, :]
 
             cc = np.vstack((cc, cc[0, None, :]))
-            cc_poly = geojson.Polygon([cc.tolist()])
-
-            annotations.append(geojson.Feature(geometry=cc_poly))
+            annotations.append(geojson_feature(cc.tolist()))
             annotations[-1]["properties"] = {"objectType": object_type}
 
     if not len(annotations):
         annotations = 0
 
     else:
-        annotations = geojson.FeatureCollection(annotations)
+        annotations = geojson_feature_collection(annotations)
 
     return annotations

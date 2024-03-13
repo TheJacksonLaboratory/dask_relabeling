@@ -6,11 +6,9 @@ import zipfile
 
 import numpy as np
 import dask.array as da
-from numcodecs import Blosc
 
 from typing import List, Union, Callable
 
-from . import utils
 from . import chunkops
 
 
