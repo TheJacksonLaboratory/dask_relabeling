@@ -216,6 +216,12 @@ def image2labels(img: da.Array, seg_fn: Callable,
         ndim=ndim
     )
 
+    # Remove the pad added with prepare_input
+    labels = labels[
+        tuple([slice(None)] * (labels.ndim - ndim)
+              + [slice(0, s) for s in img.shape[-ndim:]])
+    ]
+
     return labels
 
 
