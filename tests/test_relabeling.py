@@ -206,6 +206,11 @@ def test_image2labels(input_output):
         segmentation_fn_kwargs=segmentation_fun_kwargs
     )
 
+    labels_expected = labels_expected[
+        tuple([slice(None)] * (labels_expected.ndim - ndim)
+              + [slice(0, s) for s in input_img.shape[-ndim:]])
+    ]
+
     labels_expected = labels_expected.compute()
     labels_output = labels_output.compute()
 
