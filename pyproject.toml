@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "relabel"
+dynamic = ["version"]
+description = "Relabel is a dask-based relabeling tool for tiled/chunked segmentation of large-scale images."
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "dask"
+]
+
+[project.optional-dependencies]
+contours = ["opencv-python"]
+geojson = ["geojson"]
+test = ["pytest"]
+all = ["dask", "opencv-python", "geojson"]
+
+[project.urls]
+Homepage = "https://github.com/TheJacksonLaboratory/dask_relabeling"
+Issues = "https://github.com/TheJacksonLaboratory/dask_relabeling/issues"
+
+
+
+
