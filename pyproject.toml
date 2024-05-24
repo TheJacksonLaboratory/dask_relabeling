@@ -15,14 +15,15 @@ classifiers = [
 ]
 
 dependencies = [
-    "dask"
+    "dask",
+    "numpy"
 ]
 
 [project.optional-dependencies]
 contours = ["opencv-python"]
 geojson = ["geojson"]
-test = ["pytest"]
-all = ["dask", "opencv-python", "geojson", "pytest"]
+test = ["pytest", "scikit-image"]
+all = ["dask", "numpy", "opencv-python", "geojson", "pytest", "scikit-image"]
 
 [project.urls]
 Homepage = "https://github.com/TheJacksonLaboratory/dask_relabeling"
