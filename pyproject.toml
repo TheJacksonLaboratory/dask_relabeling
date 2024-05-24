@@ -22,7 +22,7 @@ dependencies = [
 contours = ["opencv-python"]
 geojson = ["geojson"]
 test = ["pytest"]
-all = ["dask", "opencv-python", "geojson"]
+all = ["dask", "opencv-python", "geojson", "pytest"]
 
 [project.urls]
 Homepage = "https://github.com/TheJacksonLaboratory/dask_relabeling"
