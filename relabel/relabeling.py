@@ -101,7 +101,8 @@ def merge_overlapped_tiles(labels: da.Array, overlaps: List[int],
 
 def annotate_labeled_tiles(labels: da.Array, overlaps: List[int],
                            object_classes: Union[dict, None] = None,
-                           spatial_dims: int = 2) -> Union[da.Array, pathlib.Path]:
+                           spatial_dims: int = 2) -> Union[da.Array,
+                                                           pathlib.Path]:
     if object_classes is None:
         object_classes = {
             0: "cell"
@@ -167,7 +168,8 @@ def prepare_input(img: da.Array, overlaps: List[int], spatial_dims: int = 2
     # Prepare input for overlap.
     padding = [(0, 0)] * (img.ndim - spatial_dims)
     padding += [(0, (cs - dim) % cs)
-                for dim, cs in zip(img.shape[-spatial_dims:], img.chunksize[-spatial_dims:])]
+                for dim, cs in zip(img.shape[-spatial_dims:],
+                                   img.chunksize[-spatial_dims:])]
 
     if any(map(any, padding)):
         img_padded = da.pad(
@@ -199,11 +201,16 @@ def image2labels(img: da.Array, seg_fn: Callable,
     if isinstance(overlaps, int):
         overlaps = [overlaps] * spatial_dims
 
-    img_overlapped = prepare_input(img, overlaps=overlaps, spatial_dims=spatial_dims)
+    img_overlapped = prepare_input(img, overlaps=overlaps,
+                                   spatial_dims=spatial_dims)
     if segmentation_fn_kwargs is not None:
         for key in segmentation_fn_kwargs:
             if isinstance(segmentation_fn_kwargs[key], da.Array):
-                segmentation_fn_kwargs[key] = prepare_input(segmentation_fn_kwargs[key], overlaps=overlaps, ndim=ndim)
+                segmentation_fn_kwargs[key] = prepare_input(
+                    segmentation_fn_kwargs[key],
+                    overlaps=overlaps,
+                    spatial_dims=spatial_dims
+                )
 
     labels = segment_overlapped_input(
         img_overlapped,
@@ -244,7 +251,8 @@ def labels2geojson(labels: da.Array, overlaps: Union[int, List[int]] = 50,
         overlaps = [overlaps] * spatial_dims
 
     if not pre_overlapped:
-        labels = prepare_input(labels, overlaps=overlaps, spatial_dims=spatial_dims)
+        labels = prepare_input(labels, overlaps=overlaps,
+                               spatial_dims=spatial_dims)
 
     labels = remove_overlapped_labels(
         labels,
@@ -278,7 +286,8 @@ def image2geojson(img: da.Array, seg_fn: Callable,
     if isinstance(overlaps, int):
         overlaps = [overlaps] * spatial_dims
 
-    img_overlapped = prepare_input(img, overlaps=overlaps, spatial_dims=spatial_dims)
+    img_overlapped = prepare_input(img, overlaps=overlaps,
+                                   spatial_dims=spatial_dims)
 
     labels = segment_overlapped_input(
         img_overlapped,

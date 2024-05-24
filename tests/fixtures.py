@@ -183,4 +183,3 @@ def temporal_directory(request):
         temporal_dir_name = temp_dir_class(temporal_dir_name)
 
     yield temporal_dir_name
-

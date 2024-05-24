@@ -49,7 +49,8 @@ def test_prepare_input(input_output):
     assert np.array_equal(img_overlapped_output, img_overlapped_expected), \
         (f"Overlapped input array does not match the expected overlapped image"
          f" at\n{np.where(img_overlapped_expected != img_overlapped_output)}\n"
-         f"{img_overlapped_expected[np.where(img_overlapped_expected != img_overlapped_output)]}\n\n"
+         f"{img_overlapped_expected[np.where(img_overlapped_expected != img_overlapped_output)]}"
+         f"\n\nexpected:\n"
          f"{img_overlapped_output[np.where(img_overlapped_expected != img_overlapped_output)]}")
 
 
@@ -74,7 +75,8 @@ def test_segment_overlapped_input(input_output_wclasses):
     assert np.array_equal(local_sort_output, segmentation_expected), \
         (f"Segmentation output does not match the expected overlapped image "
          f"at\n{np.where(local_sort_output != segmentation_expected)}\n"
-         f"{local_sort_output[np.where(local_sort_output != segmentation_expected)]}\n\n"
+         f"{local_sort_output[np.where(local_sort_output != segmentation_expected)]}"
+         f"\n\nexpected:\n"
          f"{segmentation_expected[np.where(local_sort_output != segmentation_expected)]}")
 
 
@@ -97,7 +99,8 @@ def test_remove_overlapped_labels(input_output_wclasses):
     removal_expected = removal_expected.compute()
 
     assert np.array_equal(removal_output, removal_expected), \
-        (f"Labeled output does not match the expected after removal of overlapping regions\n"
+        (f"Labeled output does not match the expected after removal of "
+         f"overlapping regions\n"
          f"{removal_output[np.where(removal_output != removal_expected)]}\n\n"
          f"{removal_expected[np.where(removal_output != removal_expected)]}")
 
@@ -119,8 +122,10 @@ def test_merge_overlapped_tiles(input_output_wclasses):
     merged_expected = merged_expected.compute()
 
     assert np.array_equal(merged_output, merged_expected), \
-        (f"Labeled output does not match the expected merging overlapping regions\n"
-         f"{merged_output[np.where(merged_output != merged_expected)]}\n\n"
+        (f"Labeled output does not match the expected merging overlapping "
+         f"regions\n"
+         f"{merged_output[np.where(merged_output != merged_expected)]}"
+         f"\n\nexpected:\n"
          f"{merged_expected[np.where(merged_output != merged_expected)]}")
 
 
@@ -145,7 +150,8 @@ def test_annotate_labeled_tiles(input_output_2d_only):
     assert np.array_equal(annotations_output, annotations_expected), \
         (f"Expected GEOJson annotations differ at\n"
          f"{np.where(annotations_expected != annotations_output)}\n\ngot:\n"
-         f"{annotations_output[np.where(annotations_output != annotations_expected)]}\n\nexpected:\n"
+         f"{annotations_output[np.where(annotations_output != annotations_expected)]}"
+         f"\n\nexpected:\n"
          f"{annotations_expected[np.where(annotations_output != annotations_expected)]}")
 
 
