@@ -10,7 +10,7 @@ from . import utils
 
 def remove_overlapped_objects(labeled_image: ArrayLike, overlaps: List[int],
                               threshold: float = 0.05,
-                              ndim: int = 2,
+                              spatial_dims: int = 2,
                               block_info: Union[dict, None] = None
                               ) -> np.ndarray:
     """Removes ambiguous objects detected in overlapping regions between
@@ -47,12 +47,12 @@ def remove_overlapped_objects(labeled_image: ArrayLike, overlaps: List[int],
 
     labeled_in_margin_prop = labeled_in_margin_sum / labeled_image_sum
     labels_region_dim = np.zeros_like(labeled_in_margin_prop, dtype=np.int8)
-    labels_region_dim[labeled_in_margin_prop > (1 - threshold)] = ndim + 1
-    labels_region_dim[labeled_in_margin_prop < threshold] = -(ndim + 1)
+    labels_region_dim[labeled_in_margin_prop > (1 - threshold)] = spatial_dims + 1
+    labels_region_dim[labeled_in_margin_prop < threshold] = -(spatial_dims + 1)
 
     # Compute the regions to check (faces, edges, and vertices) that are valid
     # overlaps between this chunk and all its adjacent chunks.
-    valid_indices = utils.get_valid_overlaps(chunk_location, num_chunks, ndim)
+    valid_indices = utils.get_valid_overlaps(chunk_location, num_chunks, spatial_dims)
 
     for indices in valid_indices:
         drop_label = any(map(lambda idx, coord:
@@ -112,7 +112,7 @@ def sort_indices(labeled_image: ArrayLike, unique_labels: list) -> np.ndarray:
 
 
 def merge_tiles(labeled_image: ArrayLike, overlaps: List[int],
-                ndim: int = 2,
+                spatial_dims: int = 2,
                 block_info: Union[dict, None] = None) -> np.ndarray:
     """Merge objects detected in overlapping regions from adjacent chunks of
     this chunk.
@@ -120,7 +120,7 @@ def merge_tiles(labeled_image: ArrayLike, overlaps: List[int],
     num_chunks = block_info[None]["num-chunks"]
     chunk_location = block_info[None]["chunk-location"]
     classes = None
-    if labeled_image.ndim > ndim:
+    if labeled_image.ndim > spatial_dims:
         classes = labeled_image[1:]
         labeled_image = labeled_image[0]
 
@@ -130,7 +130,7 @@ def merge_tiles(labeled_image: ArrayLike, overlaps: List[int],
     # Compute the regions to check (faces, edges, and vertices) that are valid
     # for this chunk given its location.
     valid_indices = utils.get_merging_overlaps(chunk_location, num_chunks,
-                                               ndim)
+                                               spatial_dims)
 
     # Compute selections from regions to merge
     base_src_sel = tuple(
@@ -189,7 +189,7 @@ def merge_tiles(labeled_image: ArrayLike, overlaps: List[int],
 
 def annotate_object_fetures(labeled_image: ArrayLike, overlaps: List[int],
                             object_classes: dict,
-                            ndim: int = 2,
+                            spatial_dims: int = 2,
                             block_info: Union[dict, None] = None
                             ) -> np.ndarray:
     """Convert detections into GeoJson Feature objects containing the contour
@@ -199,7 +199,7 @@ def annotate_object_fetures(labeled_image: ArrayLike, overlaps: List[int],
     array_location = block_info[0]['array-location']
     chunk_location = block_info[None]['chunk-location']
 
-    if labeled_image.ndim > ndim:
+    if labeled_image.ndim > spatial_dims:
         classes = labeled_image[1:]
         labeled_image = labeled_image[0]
 
