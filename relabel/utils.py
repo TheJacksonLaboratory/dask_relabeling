@@ -70,7 +70,8 @@ def get_valid_overlaps(chunk_location: List[int], num_chunks: List[int],
           itertools.combinations(range(spatial_dims), axis),
           range(2 ** (spatial_dims - axis))):
             indices = list(
-                np.unpackbits(np.array([k], dtype=np.uint8), count=spatial_dims - axis,
+                np.unpackbits(np.array([k], dtype=np.uint8),
+                              count=spatial_dims - axis,
                               bitorder="little")
             )
 

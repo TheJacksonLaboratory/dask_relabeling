@@ -47,12 +47,14 @@ def remove_overlapped_objects(labeled_image: ArrayLike, overlaps: List[int],
 
     labeled_in_margin_prop = labeled_in_margin_sum / labeled_image_sum
     labels_region_dim = np.zeros_like(labeled_in_margin_prop, dtype=np.int8)
-    labels_region_dim[labeled_in_margin_prop > (1 - threshold)] = spatial_dims + 1
+    labels_region_dim[labeled_in_margin_prop
+                      > (1 - threshold)] = spatial_dims + 1
     labels_region_dim[labeled_in_margin_prop < threshold] = -(spatial_dims + 1)
 
     # Compute the regions to check (faces, edges, and vertices) that are valid
     # overlaps between this chunk and all its adjacent chunks.
-    valid_indices = utils.get_valid_overlaps(chunk_location, num_chunks, spatial_dims)
+    valid_indices = utils.get_valid_overlaps(chunk_location, num_chunks,
+                                             spatial_dims)
 
     for indices in valid_indices:
         drop_label = any(map(lambda idx, coord:
