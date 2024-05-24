@@ -31,7 +31,7 @@ def check_coordinate_list(features_coords_output, features_coords_expected):
 
 
 def test_prepare_input(input_output):
-    ndim = input_output["ndim"]
+    spatial_dims = input_output["spatial_dims"]
     overlaps = input_output["overlaps"]
 
     input_img = input_output["input_arr"]
@@ -40,7 +40,7 @@ def test_prepare_input(input_output):
     img_overlapped_output = relabeling.prepare_input(
         input_img,
         overlaps=overlaps,
-        ndim=ndim
+        spatial_dims=spatial_dims
     )
 
     img_overlapped_output = img_overlapped_output.compute()
@@ -55,7 +55,7 @@ def test_prepare_input(input_output):
 
 def test_segment_overlapped_input(input_output_wclasses):
     segmentation_fun = input_output_wclasses["segmentation_fun"]
-    ndim = input_output_wclasses["ndim"]
+    spatial_dims = input_output_wclasses["spatial_dims"]
     returns_classes = input_output_wclasses["returns_classes"]
 
     input_img_overlapped = input_output_wclasses["overlapped_input_arr"]
@@ -64,7 +64,7 @@ def test_segment_overlapped_input(input_output_wclasses):
     local_sort_output = relabeling.segment_overlapped_input(
         input_img_overlapped,
         seg_fn=segmentation_fun,
-        ndim=ndim,
+        spatial_dims=spatial_dims,
         returns_classes=returns_classes
     )
 
@@ -79,7 +79,7 @@ def test_segment_overlapped_input(input_output_wclasses):
 
 
 def test_remove_overlapped_labels(input_output_wclasses):
-    ndim = input_output_wclasses["ndim"]
+    spatial_dims = input_output_wclasses["spatial_dims"]
     overlaps = input_output_wclasses["overlaps"]
     threshold = input_output_wclasses["threshold"]
 
@@ -90,7 +90,7 @@ def test_remove_overlapped_labels(input_output_wclasses):
         labels=labels_arr,
         overlaps=overlaps,
         threshold=threshold,
-        ndim=ndim
+        spatial_dims=spatial_dims
     )
 
     removal_output = removal_output.compute()
@@ -103,7 +103,7 @@ def test_remove_overlapped_labels(input_output_wclasses):
 
 
 def test_merge_overlapped_tiles(input_output_wclasses):
-    ndim = input_output_wclasses["ndim"]
+    spatial_dims = input_output_wclasses["spatial_dims"]
     overlaps = input_output_wclasses["overlaps"]
 
     labels_arr = input_output_wclasses["removal_arr"]
@@ -112,7 +112,7 @@ def test_merge_overlapped_tiles(input_output_wclasses):
     merged_output = relabeling.merge_overlapped_tiles(
         labels=labels_arr,
         overlaps=overlaps,
-        ndim=ndim
+        spatial_dims=spatial_dims
     )
 
     merged_output = merged_output.compute()
@@ -125,7 +125,7 @@ def test_merge_overlapped_tiles(input_output_wclasses):
 
 
 def test_annotate_labeled_tiles(input_output_2d_only):
-    ndim = input_output_2d_only["ndim"]
+    spatial_dims = input_output_2d_only["spatial_dims"]
     overlaps = input_output_2d_only["overlaps"]
     object_classes = input_output_2d_only["object_classes"]
 
@@ -136,7 +136,7 @@ def test_annotate_labeled_tiles(input_output_2d_only):
         labels=labels_input,
         overlaps=overlaps,
         object_classes=object_classes,
-        ndim=ndim
+        spatial_dims=spatial_dims
     )
 
     annotations_expected = annotations_expected.compute()
@@ -189,7 +189,7 @@ def test_image2labels(input_output):
     segmentation_fun_kwargs = input_output["segmentation_fun_kwargs"]
     returns_classes = input_output["returns_classes"]
 
-    ndim = input_output["ndim"]
+    spatial_dims = input_output["spatial_dims"]
     overlaps = input_output["overlaps"]
     threshold = input_output["threshold"]
 
@@ -201,14 +201,14 @@ def test_image2labels(input_output):
         seg_fn=segmentation_fun,
         overlaps=overlaps,
         threshold=threshold,
-        ndim=ndim,
+        spatial_dims=spatial_dims,
         returns_classes=returns_classes,
         segmentation_fn_kwargs=segmentation_fun_kwargs
     )
 
     labels_expected = labels_expected[
-        tuple([slice(None)] * (labels_expected.ndim - ndim)
-              + [slice(0, s) for s in input_img.shape[-ndim:]])
+        tuple([slice(None)] * (labels_expected.ndim - spatial_dims)
+              + [slice(0, s) for s in input_img.shape[-spatial_dims:]])
     ]
 
     labels_expected = labels_expected.compute()
@@ -224,7 +224,7 @@ def test_image2geojson(input_output_2d_only):
     segmentation_fun_kwargs = input_output_2d_only["segmentation_fun_kwargs"]
     returns_classes = input_output_2d_only["returns_classes"]
 
-    ndim = input_output_2d_only["ndim"]
+    spatial_dims = input_output_2d_only["spatial_dims"]
     overlaps = input_output_2d_only["overlaps"]
     threshold = input_output_2d_only["threshold"]
 
@@ -238,7 +238,7 @@ def test_image2geojson(input_output_2d_only):
         seg_fn=segmentation_fun,
         overlaps=overlaps,
         threshold=threshold,
-        ndim=ndim,
+        spatial_dims=spatial_dims,
         returns_classes=returns_classes,
         object_classes=object_classes,
         segmentation_fn_kwargs=segmentation_fun_kwargs
@@ -253,7 +253,7 @@ def test_image2geojson(input_output_2d_only):
 
 
 def test_labels2geojson(input_output_2d_only):
-    ndim = input_output_2d_only["ndim"]
+    spatial_dims = input_output_2d_only["spatial_dims"]
     overlaps = input_output_2d_only["overlaps"]
     threshold = input_output_2d_only["threshold"]
 
@@ -266,7 +266,7 @@ def test_labels2geojson(input_output_2d_only):
         labeled_input_img,
         overlaps=overlaps,
         threshold=threshold,
-        ndim=ndim,
+        spatial_dims=spatial_dims,
         object_classes=object_classes,
         pre_overlapped=False
     )
@@ -280,14 +280,14 @@ def test_labels2geojson(input_output_2d_only):
 
 
 def test_sort_label_indices(input_output_wclasses):
-    ndim = input_output_wclasses["ndim"]
+    spatial_dims = input_output_wclasses["spatial_dims"]
 
     labels_arr = input_output_wclasses["trimmed_merged_arr"]
     sorted_expected = input_output_wclasses["sorted_merged_arr"]
 
     sorted_output = relabeling.sort_label_indices(
         labels=labels_arr,
-        ndim=ndim
+        spatial_dims=spatial_dims
     )
 
     sorted_output = sorted_output.compute()

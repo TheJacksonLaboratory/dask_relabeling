@@ -62,15 +62,15 @@ except ImportError:
 
 
 def get_valid_overlaps(chunk_location: List[int], num_chunks: List[int],
-                       ndim: int) -> List[List[int]]:
+                       spatial_dims: int) -> List[List[int]]:
     valid_indices = []
 
-    for axis in range(ndim):
+    for axis in range(spatial_dims):
         for comb, k in itertools.product(
-          itertools.combinations(range(ndim), axis),
-          range(2 ** (ndim - axis))):
+          itertools.combinations(range(spatial_dims), axis),
+          range(2 ** (spatial_dims - axis))):
             indices = list(
-                np.unpackbits(np.array([k], dtype=np.uint8), count=ndim - axis,
+                np.unpackbits(np.array([k], dtype=np.uint8), count=spatial_dims - axis,
                               bitorder="little")
             )
 
@@ -88,13 +88,13 @@ def get_valid_overlaps(chunk_location: List[int], num_chunks: List[int],
 
 
 def get_merging_overlaps(chunk_location: List[int], num_chunks: List[int],
-                         ndim: int) -> List[List[int]]:
+                         spatial_dims: int) -> List[List[int]]:
     # Compute all the valid overlaps between the current chunk and all its
     # adjacent chunks.
     merging_indices = get_valid_overlaps(
         chunk_location=chunk_location,
         num_chunks=num_chunks,
-        ndim=ndim
+        spatial_dims=spatial_dims
     )
 
     # Merge overlaps in odd-coordinate locations from even-coordinate locations

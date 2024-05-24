@@ -43,7 +43,7 @@ def input_output_2d():
     num_blocks = (4, 3)
 
     expected_values = {
-        "ndim": 2,
+        "spatial_dims": 2,
         "segmentation_fun": segmentation_fun,
         "segmentation_fun_kwargs": {},
         "returns_classes": False,
@@ -72,7 +72,7 @@ def input_output_3d():
     num_blocks = (3, 2, 3)
 
     expected_values = {
-        "ndim": 3,
+        "spatial_dims": 3,
         "segmentation_fun": segmentation_fun,
         "segmentation_fun_kwargs": {},
         "returns_classes": False,
@@ -135,9 +135,9 @@ def add_classes_channel(expected_values):
 
 @pytest.fixture(scope="module", params=[2, 3])
 def input_output(request):
-    ndim = request.param
+    spatial_dims = request.param
 
-    if ndim == 2:
+    if spatial_dims == 2:
         expected_values = input_output_2d()
     else:
         expected_values = input_output_3d()
