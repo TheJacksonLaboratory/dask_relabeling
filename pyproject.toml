@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dask-relabel"
+dynamic = ["version"]
+description = "Relabel is a dask-based relabeling tool for tiled/chunked segmentation of large-scale images."
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+  {name = "Fernando Cervantes (The Jackson Laboratory)"},
+  {email = "fernando.cervantes@jax.org"},
+]
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "dask[array]",
+    "numpy"
+]
+
+[project.optional-dependencies]
+contours = [
+    "opencv-python"
+]
+geojson = [
+    "geojson"
+]
+test = [
+    "pytest",
+    "scikit-image"
+]
+all = [
+    "dask[array]",
+    "numpy",
+    "opencv-python",
+    "geojson",
+    "pytest",
+    "scikit-image"
+]
+
+[project.urls]
+Homepage = "https://github.com/TheJacksonLaboratory/dask_relabeling"
+Issues = "https://github.com/TheJacksonLaboratory/dask_relabeling/issues"
