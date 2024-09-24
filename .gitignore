@@ -129,6 +129,10 @@ venv.bak/
 
 # mkdocs documentation
 /site
+/_site
+/reference
+_sidebar.yml
+objects.json
 
 # mypy
 .mypy_cache/
@@ -157,3 +161,5 @@ view_napari.py
 .vscode/*
 *.yaml
 example_relabeling.py
+
+/.quarto/
